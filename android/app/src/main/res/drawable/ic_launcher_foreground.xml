@@ -4,58 +4,14 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Soft outer glow -->
+    <!-- Single clean circle -->
     <path
-        android:pathData="M54,54m-34,0a34,34 0,1 1,68 0a34,34 0,1 1,-68 0"
-        android:fillColor="#818CF8"
-        android:fillAlpha="0.08"/>
+        android:pathData="M54,54m-28,0a28,28 0,1 1,56 0a28,28 0,1 1,-56 0"
+        android:fillColor="#FFFFFF"/>
 
-    <!-- Main gradient circle - indigo -->
+    <!-- Play triangle - precisely centered, simple -->
     <path
-        android:pathData="M54,54m-26,0a26,26 0,1 1,52 0a26,26 0,1 1,-52 0"
-        android:fillColor="#6366F1"/>
-
-    <!-- Top-left highlight for 3D feel -->
-    <path
-        android:pathData="M40,36 Q54,28 68,36 Q54,44 40,36Z"
-        android:fillColor="#A5B4FC"
-        android:fillAlpha="0.35"/>
-
-    <!-- Camera lens outer ring -->
-    <path
-        android:pathData="M54,54m-16,0a16,16 0,1 1,32 0a16,16 0,1 1,-32 0"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="2"
-        android:strokeAlpha="0.7"
-        android:fillColor="#00000000"/>
-
-    <!-- Camera lens inner -->
-    <path
-        android:pathData="M54,54m-10,0a10,10 0,1 1,20 0a10,10 0,1 1,-20 0"
-        android:fillColor="#4338CA"
-        android:fillAlpha="0.6"/>
-
-    <!-- Lens center dot -->
-    <path
-        android:pathData="M54,54m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0"
-        android:fillColor="#FFFFFF"
-        android:fillAlpha="0.9"/>
-
-    <!-- Lens reflection -->
-    <path
-        android:pathData="M48,48m-2.5,0a2.5,2.5 0,1 1,5 0a2.5,2.5 0,1 1,-5 0"
-        android:fillColor="#FFFFFF"
-        android:fillAlpha="0.5"/>
-
-    <!-- LIVE indicator - red dot -->
-    <path
-        android:pathData="M71,37m-5,0a5,5 0,1 1,10 0a5,5 0,1 1,-10 0"
-        android:fillColor="#EF4444"/>
-
-    <!-- LIVE indicator - inner white dot -->
-    <path
-        android:pathData="M71,37m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0"
-        android:fillColor="#FFFFFF"
-        android:fillAlpha="0.9"/>
+        android:pathData="M46,40L46,68L70,54Z"
+        android:fillColor="#1C1C1E"/>
 
 </vector>

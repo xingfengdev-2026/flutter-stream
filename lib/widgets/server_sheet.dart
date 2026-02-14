@@ -154,7 +154,7 @@ class _ServerSheetState extends State<ServerSheet> {
               const SizedBox(height: 12),
               _dialogField(urlCtrl, 'RTMP URL', 'rtmp://server.com/live'),
               const SizedBox(height: 12),
-              _dialogField(keyCtrl, 'Stream Key', 'your-stream-key'),
+              _dialogField(keyCtrl, 'Stream Key (optional)', 'leave empty if not needed'),
             ],
           ),
         ),

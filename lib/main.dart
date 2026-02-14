@@ -27,7 +27,7 @@ class StreamApp extends StatelessWidget {
     return ChangeNotifierProvider(
       create: (_) => LiveStreamProvider(),
       child: MaterialApp(
-        title: 'GoLive',
+        title: 'OnAir',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           brightness: Brightness.dark,

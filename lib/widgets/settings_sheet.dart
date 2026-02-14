@@ -12,14 +12,13 @@ class SettingsSheet extends StatelessWidget {
     return Consumer<LiveStreamProvider>(
       builder: (context, p, _) {
         final locked = p.status != StreamStatus.idle;
-        return Container(
-          decoration: const BoxDecoration(
-            color: Color(0xFF181620),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-          ),
-          child: SingleChildScrollView(
-            padding: EdgeInsets.fromLTRB(20, 0, 20, 16 + bottom),
-            child: Column(
+        return ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          child: Container(
+            color: const Color(0xFF181620),
+            child: SingleChildScrollView(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 16 + bottom),
+              child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -94,26 +93,15 @@ class SettingsSheet extends StatelessWidget {
                 const SizedBox(height: 8),
                 _ChipRow(
                   options: const [
-                    '240p',
+                    'Native',
                     '360p',
-                    '480p',
                     '720p',
                     '1080p',
-                    '1440p',
-                    '2160p',
+                    '2K',
+                    '4K',
                   ],
                   selected: p.resolution,
                   onSelected: locked ? null : p.setResolution,
-                ),
-                const SizedBox(height: 22),
-
-                // Bitrate
-                _sectionTitle('Max Bitrate'),
-                const SizedBox(height: 8),
-                _BitrateInput(
-                  bitrate: p.bitrate,
-                  locked: locked,
-                  onChanged: p.setBitrate,
                 ),
                 const SizedBox(height: 22),
 
@@ -121,14 +109,34 @@ class SettingsSheet extends StatelessWidget {
                 _sectionTitle('Frame Rate'),
                 const SizedBox(height: 8),
                 _ChipRow(
-                  options: const ['15 fps', '24 fps', '30 fps', '60 fps'],
-                  selected: '${p.fps} fps',
-                  onSelected:
-                      locked ? null : (v) => p.setFps(int.parse(v.split(' ').first)),
+                  options: const ['Native', '15 fps', '24 fps', '30 fps', '60 fps'],
+                  selected: p.isNativeFps ? 'Native' : '${p.customFps} fps',
+                  onSelected: locked
+                      ? null
+                      : (v) {
+                          if (v == 'Native') {
+                            p.setFpsNative();
+                          } else {
+                            p.setFpsCustom(int.parse(v.split(' ').first));
+                          }
+                        },
+                ),
+                const SizedBox(height: 22),
+
+                // Bitrate
+                _sectionTitle('Max Bitrate'),
+                const SizedBox(height: 8),
+                _BitrateSection(
+                  isNative: p.isNativeBitrate,
+                  customBitrate: p.customBitrate,
+                  locked: locked,
+                  onSetNative: p.setBitrateNative,
+                  onSetCustom: p.setBitrateCustom,
                 ),
                 const SizedBox(height: 8),
               ],
             ),
+          ),
           ),
         );
       },
@@ -143,6 +151,104 @@ class SettingsSheet extends StatelessWidget {
         fontSize: 13,
         fontWeight: FontWeight.w500,
         letterSpacing: 0.5,
+      ),
+    );
+  }
+}
+
+// ─── Bitrate Section (Native toggle + custom input) ──────
+
+class _BitrateSection extends StatelessWidget {
+  final bool isNative;
+  final int customBitrate;
+  final bool locked;
+  final VoidCallback onSetNative;
+  final ValueChanged<int> onSetCustom;
+
+  const _BitrateSection({
+    required this.isNative,
+    required this.customBitrate,
+    required this.locked,
+    required this.onSetNative,
+    required this.onSetCustom,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Native / Custom toggle chips
+        Row(
+          children: [
+            _MiniChip(
+              label: 'Native',
+              selected: isNative,
+              onTap: locked ? null : onSetNative,
+            ),
+            const SizedBox(width: 8),
+            _MiniChip(
+              label: 'Custom',
+              selected: !isNative,
+              onTap: locked
+                  ? null
+                  : () {
+                      if (isNative) onSetCustom(customBitrate);
+                    },
+            ),
+          ],
+        ),
+        // Show input only when Custom is selected
+        if (!isNative) ...[
+          const SizedBox(height: 10),
+          _BitrateInput(
+            bitrate: customBitrate,
+            locked: locked,
+            onChanged: onSetCustom,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+// ─── Mini Chip for Native/Custom toggle ──────────────────
+
+class _MiniChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  const _MiniChip({
+    required this.label,
+    required this.selected,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          color: selected
+              ? const Color(0xFF6366F1)
+              : Colors.white.withValues(alpha: 0.06),
+          border: selected
+              ? null
+              : Border.all(color: Colors.white.withValues(alpha: 0.06)),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? Colors.white : Colors.white54,
+            fontSize: 13,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+          ),
+        ),
       ),
     );
   }
@@ -172,7 +278,6 @@ class _BitrateInputState extends State<_BitrateInput> {
   @override
   void initState() {
     super.initState();
-    // Determine initial unit and value from current bitrate
     if (widget.bitrate >= 1000000) {
       _isMbps = true;
       final mbps = widget.bitrate / 1000000;
@@ -186,7 +291,6 @@ class _BitrateInputState extends State<_BitrateInput> {
 
   String _formatNumber(double v) {
     if (v == v.roundToDouble()) return v.toInt().toString();
-    // Remove trailing zeros
     return v.toStringAsFixed(2).replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
   }
 

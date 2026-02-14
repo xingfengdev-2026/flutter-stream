@@ -7,23 +7,6 @@ import '../providers/stream_provider.dart';
 import '../widgets/server_sheet.dart';
 import '../widgets/settings_sheet.dart';
 
-Resolution mapResolution(String res) {
-  switch (res) {
-    case '240p':
-      return Resolution.RESOLUTION_240;
-    case '360p':
-      return Resolution.RESOLUTION_360;
-    case '480p':
-      return Resolution.RESOLUTION_480;
-    case '1080p':
-    case '1440p':
-    case '2160p':
-      return Resolution.RESOLUTION_1080;
-    default:
-      return Resolution.RESOLUTION_720;
-  }
-}
-
 class LiveScreen extends StatefulWidget {
   const LiveScreen({super.key});
 
@@ -37,16 +20,26 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   bool _permissionsGranted = false;
   bool _isInitialized = false;
 
+  /// Guards concurrent _recreateController calls. Only the latest one proceeds.
+  int _recreateGen = 0;
+
+  /// True if we were live/reconnecting when the screen locked.
+  /// Used to trigger controller recreation on resume.
+  bool _wasLiveBeforePause = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _provider = Provider.of<LiveStreamProvider>(context, listen: false);
+    _provider.onControllerNeedsRecreate = _recreateController;
     _requestPermissions();
   }
 
   @override
   void dispose() {
+    _recreateGen++;
+    _provider.onControllerNeedsRecreate = null;
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
     super.dispose();
@@ -54,15 +47,45 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (!_isInitialized) return;
-    // Don't stop preview/streaming when screen turns off during active stream
+    debugPrint('[OnAir] Lifecycle: $state');
+
     final isLive = _provider.status == StreamStatus.streaming ||
         _provider.status == StreamStatus.connecting ||
         _provider.status == StreamStatus.reconnecting;
-    if (state == AppLifecycleState.inactive && !isLive) {
-      _controller?.stopPreview();
+
+    if (state == AppLifecycleState.inactive) {
+      if (isLive) _wasLiveBeforePause = true;
+      // Don't stop preview if live — camera must stay open for encoding.
+      if (!isLive && _isInitialized) {
+        _controller?.stopPreview();
+      }
+    } else if (state == AppLifecycleState.paused) {
+      if (isLive) _wasLiveBeforePause = true;
     } else if (state == AppLifecycleState.resumed) {
-      _controller?.startPreview();
+      if (_wasLiveBeforePause && !_provider.userStopped && _provider.activeServer != null) {
+        _wasLiveBeforePause = false;
+
+        if (_provider.status == StreamStatus.streaming) {
+          // Stream survived background — DON'T touch the controller at all.
+          // Calling startPreview() would restart the camera pipeline and
+          // kill the RTMP connection. The preview texture will refresh
+          // automatically when Flutter re-renders the surface.
+          debugPrint('[OnAir] Resumed — stream still alive, hands off');
+          // Arm grace period: ignore spurious native disconnect callbacks
+          // that may fire from the Flutter texture lifecycle change.
+          _provider.armResumeGrace();
+        } else {
+          // Stream died during background — recreate controller to recover.
+          debugPrint('[OnAir] Resumed — stream died in background, recreating...');
+          _provider.notifyResumeFromBackground();
+          _recreateController();
+        }
+      } else {
+        _wasLiveBeforePause = false;
+        if (_isInitialized && !(_provider.status == StreamStatus.streaming)) {
+          _controller?.startPreview();
+        }
+      }
     }
   }
 
@@ -78,18 +101,101 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _initCamera() async {
+    _recreateGen++;
+    final myGen = _recreateGen;
     _controller = ApiVideoLiveStreamController(
       initialAudioConfig: AudioConfig(),
-      initialVideoConfig: VideoConfig.withDefaultBitrate(
-        resolution: mapResolution(_provider.resolution),
-      ),
-      onConnectionSuccess: () => _provider.onConnectionSuccess(),
-      onConnectionFailed: (error) => _provider.onConnectionFailed(error),
-      onDisconnection: () => _provider.onDisconnect(),
+      initialVideoConfig: _provider.buildVideoConfig(),
+      onConnectionSuccess: () {
+        if (_recreateGen == myGen) _provider.onConnectionSuccess();
+      },
+      onConnectionFailed: (error) {
+        if (_recreateGen == myGen) _provider.onConnectionFailed(error);
+      },
+      onDisconnection: () {
+        if (_recreateGen == myGen) _provider.onDisconnect();
+      },
     );
     await _controller!.initialize();
+    if (_recreateGen != myGen || !mounted) return;
     _provider.initController(_controller!);
-    if (mounted) setState(() => _isInitialized = true);
+    setState(() => _isInitialized = true);
+  }
+
+  /// Builds a brand-new native controller, disposing the old one.
+  /// Uses a generation counter so rapid calls don't conflict:
+  /// only the latest call's result is kept.
+  /// Old controller callbacks are guarded — they can't fire into the new state.
+  Future<void> _recreateController() async {
+    _recreateGen++;
+    final myGen = _recreateGen;
+    debugPrint('[OnAir] Recreating controller (gen=$myGen)...');
+
+    // Grab and clear old controller
+    final oldController = _controller;
+    _controller = null;
+    _isInitialized = false;
+    _provider.clearController();
+
+    // Dispose old — don't await, it might hang on dead network
+    if (oldController != null) {
+      Future.microtask(() {
+        try { oldController.dispose(); } catch (_) {}
+      });
+    }
+
+    // Wait for native resources to fully release.
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (_recreateGen != myGen || !mounted) return; // superseded
+
+    // Create fresh controller.
+    // CRITICAL: callbacks are guarded by myGen — if this controller
+    // becomes stale (another recreation happens), its callbacks are
+    // silently ignored so they can't corrupt the new state.
+    try {
+      final ctrl = ApiVideoLiveStreamController(
+        initialAudioConfig: AudioConfig(),
+        initialVideoConfig: _provider.buildVideoConfig(),
+        onConnectionSuccess: () {
+          if (_recreateGen == myGen) _provider.onConnectionSuccess();
+        },
+        onConnectionFailed: (error) {
+          if (_recreateGen == myGen) _provider.onConnectionFailed(error);
+        },
+        onDisconnection: () {
+          if (_recreateGen == myGen) _provider.onDisconnect();
+        },
+      );
+      await ctrl.initialize();
+
+      // Check again after await — might have been superseded
+      if (_recreateGen != myGen || !mounted) {
+        Future.microtask(() {
+          try { ctrl.dispose(); } catch (_) {}
+        });
+        return;
+      }
+
+      _controller = ctrl;
+      _provider.initController(ctrl);
+      setState(() => _isInitialized = true);
+
+      debugPrint('[OnAir] Controller recreated successfully (gen=$myGen)');
+
+      // Resume reconnect with fresh controller
+      if (_provider.activeServer != null && !_provider.userStopped) {
+        _provider.attemptConnect(_provider.activeServer!);
+      }
+    } catch (e) {
+      debugPrint('[OnAir] Controller recreation failed: $e');
+      if (_recreateGen != myGen || !mounted) return;
+      // Retry after delay
+      await Future.delayed(const Duration(seconds: 1));
+      if (_recreateGen == myGen && mounted &&
+          _provider.activeServer != null && !_provider.userStopped) {
+        _recreateController();
+      }
+    }
   }
 
   void _onRecordTap() async {
@@ -107,7 +213,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       builder: (_) => ServerSheet(provider: _provider),
     );
     if (server != null && mounted) {
-      _provider.startStreaming(server);
+      // Always recreate controller for a fresh start — prevents
+      // "corrupted controller" from requiring app restart.
+      await _provider.startStreamingWithFreshController(server);
     }
   }
 
@@ -127,15 +235,11 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       isScrollControlled: true,
       builder: (_) => ChangeNotifierProvider.value(
         value: _provider,
-        child: DraggableScrollableSheet(
-          initialChildSize: 0.65,
-          minChildSize: 0.3,
-          maxChildSize: 0.85,
-          expand: false,
-          builder: (_, scrollCtrl) => SingleChildScrollView(
-            controller: scrollCtrl,
-            child: const SettingsSheet(),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
           ),
+          child: const SettingsSheet(),
         ),
       ),
     );
@@ -164,17 +268,17 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
           // Top
           Positioned(
             top: 0, left: 0, right: 0,
-            child: _TopBar(),
+            child: RepaintBoundary(child: _TopBar()),
           ),
 
           // Bottom
           Positioned(
             bottom: 0, left: 0, right: 0,
-            child: _BottomControls(
+            child: RepaintBoundary(child: _BottomControls(
               onRecord: _onRecordTap,
               onSettings: _showSettings,
               onServers: _showServers,
-            ),
+            )),
           ),
         ],
       ),
@@ -225,7 +329,7 @@ class _TopBar extends StatelessWidget {
                   ],
                   const Spacer(),
                   _badge(p.resolution, Colors.white60),
-                  if (isLive && p.activeServer != null) ...[
+                  if ((isLive || isReconnecting) && p.activeServer != null) ...[
                     const SizedBox(width: 8),
                     _badge(p.activeServer!.name, Colors.white60),
                   ],
@@ -295,64 +399,21 @@ class _BottomControls extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (p.status == StreamStatus.error)
-                    Container(
-                      margin: const EdgeInsets.only(
-                          bottom: 12, left: 32, right: 32),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.red.withValues(alpha: 0.85),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.error_outline,
-                              color: Colors.white, size: 16),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              p.errorMessage,
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 12),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
+                    _StatusBanner(
+                      color: Colors.red,
+                      icon: const Icon(Icons.error_outline,
+                          color: Colors.white, size: 16),
+                      text: p.errorMessage,
                     ),
                   if (isReconnecting)
-                    Container(
-                      margin: const EdgeInsets.only(
-                          bottom: 12, left: 32, right: 32),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withValues(alpha: 0.85),
-                        borderRadius: BorderRadius.circular(10),
+                    _StatusBanner(
+                      color: Colors.orange,
+                      icon: const SizedBox(
+                        width: 14, height: 14,
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2),
                       ),
-                      child: Row(
-                        children: [
-                          const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              p.errorMessage,
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 12),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
+                      text: p.errorMessage,
                     ),
 
                   Row(
@@ -399,6 +460,44 @@ class _BottomControls extends StatelessWidget {
 }
 
 // ─── Widgets ──────────────────────────────────────────────
+
+class _StatusBanner extends StatelessWidget {
+  final Color color;
+  final Widget icon;
+  final String text;
+
+  const _StatusBanner({
+    required this.color,
+    required this.icon,
+    required this.text,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12, left: 32, right: 32),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          icon,
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _CircleButton extends StatelessWidget {
   final IconData icon;
@@ -475,12 +574,9 @@ class _RecordButton extends StatelessWidget {
             child: Center(
               child: isConnecting
                   ? const SizedBox(
-                      width: 24,
-                      height: 24,
+                      width: 24, height: 24,
                       child: CircularProgressIndicator(
-                        color: Colors.red,
-                        strokeWidth: 2.5,
-                      ),
+                          color: Colors.red, strokeWidth: 2.5),
                     )
                   : AnimatedContainer(
                       duration: const Duration(milliseconds: 250),
@@ -489,24 +585,15 @@ class _RecordButton extends StatelessWidget {
                       height: isLive ? 24 : 58,
                       decoration: BoxDecoration(
                         color: Colors.red,
-                        borderRadius: BorderRadius.circular(isLive ? 6 : 29),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.red.withValues(alpha: 0.4),
-                            blurRadius: isLive ? 8 : 16,
-                          ),
-                        ],
+                        borderRadius:
+                            BorderRadius.circular(isLive ? 6 : 29),
                       ),
                     ),
             ),
           ),
           const SizedBox(height: 6),
           Text(
-            isLive
-                ? 'Stop'
-                : isConnecting
-                    ? 'Connecting'
-                    : 'Go Live',
+            isLive ? 'Stop' : isConnecting ? 'Connecting' : 'Go Live',
             style: TextStyle(
               color: isLive ? Colors.red.shade300 : Colors.white60,
               fontSize: 11,
@@ -535,7 +622,8 @@ class _PulsingDotState extends State<_PulsingDot>
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1000),
+      // Slower pulse = less GPU work
+      duration: const Duration(milliseconds: 2000),
     )..repeat(reverse: true);
   }
 
@@ -547,20 +635,16 @@ class _PulsingDotState extends State<_PulsingDot>
 
   @override
   Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: Tween(begin: 0.3, end: 1.0).animate(_ctrl),
-      child: Container(
-        width: 10,
-        height: 10,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: widget.color,
-          boxShadow: [
-            BoxShadow(
-              color: widget.color.withValues(alpha: 0.5),
-              blurRadius: 6,
-            ),
-          ],
+    // RepaintBoundary isolates this animation from the rest of the tree.
+    return RepaintBoundary(
+      child: FadeTransition(
+        opacity: Tween(begin: 0.3, end: 1.0).animate(_ctrl),
+        child: Container(
+          width: 10, height: 10,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: widget.color,
+          ),
         ),
       ),
     );
