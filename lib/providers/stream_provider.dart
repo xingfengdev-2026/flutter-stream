@@ -257,12 +257,14 @@ class LiveStreamProvider extends ChangeNotifier {
 
   Resolution mapResolution(String res) {
     switch (res) {
+      case '240p':
+        return Resolution.RESOLUTION_240;
       case '360p':
         return Resolution.RESOLUTION_360;
+      case '480p':
+        return Resolution.RESOLUTION_480;
       case '720p':
         return Resolution.RESOLUTION_720;
-      case '2K':
-      case '4K':
       case '1080p':
         return Resolution.RESOLUTION_1080;
       default:

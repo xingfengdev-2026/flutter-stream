@@ -11,7 +11,6 @@ class SettingsSheet extends StatelessWidget {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
     return Consumer<LiveStreamProvider>(
       builder: (context, p, _) {
-        final locked = p.status != StreamStatus.idle;
         return ClipRRect(
           borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
           child: Container(
@@ -48,22 +47,6 @@ class SettingsSheet extends StatelessWidget {
                     ),
                   ],
                 ),
-                if (locked)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Row(
-                      children: [
-                        Icon(Icons.info_outline,
-                            color: Colors.amber.shade600, size: 14),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Stop streaming to change settings',
-                          style: TextStyle(
-                              color: Colors.amber.shade600, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  ),
                 const SizedBox(height: 24),
 
                 // Camera
@@ -75,14 +58,14 @@ class SettingsSheet extends StatelessWidget {
                       icon: Icons.camera_rear_rounded,
                       label: 'Back',
                       selected: !p.isFrontCamera,
-                      onTap: locked ? null : () => p.setCameraPosition(false),
+                      onTap: () => p.setCameraPosition(false),
                     ),
                     const SizedBox(width: 10),
                     _CameraOption(
                       icon: Icons.camera_front_rounded,
                       label: 'Front',
                       selected: p.isFrontCamera,
-                      onTap: locked ? null : () => p.setCameraPosition(true),
+                      onTap: () => p.setCameraPosition(true),
                     ),
                   ],
                 ),
@@ -94,14 +77,14 @@ class SettingsSheet extends StatelessWidget {
                 _ChipRow(
                   options: const [
                     'Native',
+                    '240p',
                     '360p',
+                    '480p',
                     '720p',
                     '1080p',
-                    '2K',
-                    '4K',
                   ],
                   selected: p.resolution,
-                  onSelected: locked ? null : p.setResolution,
+                  onSelected: p.setResolution,
                 ),
                 const SizedBox(height: 22),
 
@@ -111,15 +94,13 @@ class SettingsSheet extends StatelessWidget {
                 _ChipRow(
                   options: const ['Native', '15 fps', '24 fps', '30 fps', '60 fps'],
                   selected: p.isNativeFps ? 'Native' : '${p.customFps} fps',
-                  onSelected: locked
-                      ? null
-                      : (v) {
-                          if (v == 'Native') {
-                            p.setFpsNative();
-                          } else {
-                            p.setFpsCustom(int.parse(v.split(' ').first));
-                          }
-                        },
+                  onSelected: (v) {
+                    if (v == 'Native') {
+                      p.setFpsNative();
+                    } else {
+                      p.setFpsCustom(int.parse(v.split(' ').first));
+                    }
+                  },
                 ),
                 const SizedBox(height: 22),
 
@@ -129,7 +110,6 @@ class SettingsSheet extends StatelessWidget {
                 _BitrateSection(
                   isNative: p.isNativeBitrate,
                   customBitrate: p.customBitrate,
-                  locked: locked,
                   onSetNative: p.setBitrateNative,
                   onSetCustom: p.setBitrateCustom,
                 ),
@@ -161,14 +141,12 @@ class SettingsSheet extends StatelessWidget {
 class _BitrateSection extends StatelessWidget {
   final bool isNative;
   final int customBitrate;
-  final bool locked;
   final VoidCallback onSetNative;
   final ValueChanged<int> onSetCustom;
 
   const _BitrateSection({
     required this.isNative,
     required this.customBitrate,
-    required this.locked,
     required this.onSetNative,
     required this.onSetCustom,
   });
@@ -178,32 +156,27 @@ class _BitrateSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Native / Custom toggle chips
         Row(
           children: [
             _MiniChip(
               label: 'Native',
               selected: isNative,
-              onTap: locked ? null : onSetNative,
+              onTap: onSetNative,
             ),
             const SizedBox(width: 8),
             _MiniChip(
               label: 'Custom',
               selected: !isNative,
-              onTap: locked
-                  ? null
-                  : () {
-                      if (isNative) onSetCustom(customBitrate);
-                    },
+              onTap: () {
+                if (isNative) onSetCustom(customBitrate);
+              },
             ),
           ],
         ),
-        // Show input only when Custom is selected
         if (!isNative) ...[
           const SizedBox(height: 10),
           _BitrateInput(
             bitrate: customBitrate,
-            locked: locked,
             onChanged: onSetCustom,
           ),
         ],
@@ -258,12 +231,10 @@ class _MiniChip extends StatelessWidget {
 
 class _BitrateInput extends StatefulWidget {
   final int bitrate;
-  final bool locked;
   final ValueChanged<int> onChanged;
 
   const _BitrateInput({
     required this.bitrate,
-    required this.locked,
     required this.onChanged,
   });
 
@@ -313,7 +284,6 @@ class _BitrateInputState extends State<_BitrateInput> {
   }
 
   void _toggleUnit() {
-    if (widget.locked) return;
     final currentBps = _isMbps
         ? (double.tryParse(_textCtrl.text) ?? 0) * 1000000
         : (double.tryParse(_textCtrl.text) ?? 0) * 1000;
@@ -346,7 +316,7 @@ class _BitrateInputState extends State<_BitrateInput> {
             ),
             child: TextField(
               controller: _textCtrl,
-              enabled: !widget.locked,
+              enabled: true,
               keyboardType:
                   const TextInputType.numberWithOptions(decimal: true),
               inputFormatters: [
