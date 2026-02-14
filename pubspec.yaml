@@ -1,0 +1,25 @@
+name: stream_app
+description: "Live streaming app with RTMP support"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  apivideo_live_stream: ^1.1.3
+  provider: ^6.1.2
+  shared_preferences: ^2.3.4
+  permission_handler: ^11.3.1
+  wakelock_plus: ^1.2.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
