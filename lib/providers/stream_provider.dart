@@ -62,6 +62,21 @@ class LiveStreamProvider extends ChangeNotifier {
   bool _isFrontCamera = false;
   bool get isFrontCamera => _isFrontCamera;
 
+  bool _isVideoEnabled = true;
+  bool get isVideoEnabled => _isVideoEnabled;
+
+  /// List of back cameras: [{id, label}, ...]
+  List<Map<String, String>> _backCameras = [];
+  List<Map<String, String>> get backCameras => _backCameras;
+
+  String? _selectedCameraId;
+  String? get selectedCameraId => _selectedCameraId;
+
+  double _currentZoom = 1.0;
+  double get currentZoom => _currentZoom;
+  double _maxZoom = 1.0;
+  double get maxZoom => _maxZoom;
+
   String _resolution = 'Native';
   String get resolution => _resolution;
 
@@ -191,6 +206,9 @@ class LiveStreamProvider extends ChangeNotifier {
     try {
       await _controller!.setIsMuted(_isMuted);
     } catch (_) {}
+    // Load back cameras and max zoom after controller is ready
+    loadBackCameras();
+    loadZoomRange();
   }
 
   void clearController() {
@@ -267,6 +285,10 @@ class LiveStreamProvider extends ChangeNotifier {
         return Resolution.RESOLUTION_720;
       case '1080p':
         return Resolution.RESOLUTION_1080;
+      case '1440p':
+        return Resolution.RESOLUTION_1440;
+      case '2160p':
+        return Resolution.RESOLUTION_2160;
       default:
         return Resolution.RESOLUTION_1080;
     }
@@ -383,11 +405,15 @@ class LiveStreamProvider extends ChangeNotifier {
   /// library expects.  The native library constructs the final RTMP URL as
   /// `url + "/" + key`, so the URL must contain the app path.
   ///
+  /// When the URL has NO path and a key is provided, the key is treated as
+  /// the path (app name + optional stream key separated by `/`).
+  ///
   /// Examples:
   ///   ("rtmp://host/live", "abc")       → ("rtmp://host/live", "abc")
   ///   ("rtmp://host/live/abc", "")      → ("rtmp://host/live", "abc")
-  ///   ("rtmp://host", "abc")            → ("rtmp://host/live", "abc")  // add /live
-  ///   ("rtmp://host", "")               → ("rtmp://host/live", "stream")
+  ///   ("rtmp://host", "live/abc")       → ("rtmp://host/live", "abc")
+  ///   ("rtmp://host", "live")           → ("rtmp://host/live", "stream")
+  ///   ("rtmp://host", "")               → ("rtmp://host", "stream")
   ///   ("rtmp://host/app", "")           → ("rtmp://host", "app")
   static (String url, String key) splitUrlKey(String rawUrl, String rawKey) {
     final key = rawKey.trim();
@@ -405,12 +431,19 @@ class LiveStreamProvider extends ChangeNotifier {
 
     // URL has NO path (e.g. rtmp://192.168.1.23)
     if (firstSlash < 0) {
-      if (key.isNotEmpty) {
-        // Add default /live app path so native gets: rtmp://host/live/key
-        return ('$url/live', key);
+      if (key.isEmpty) {
+        return (url, 'stream');
       }
-      // No path, no key → use defaults
-      return ('$url/live', 'stream');
+      // Treat key as path: "live/abc" → url="rtmp://host/live", key="abc"
+      //                     "live"     → url="rtmp://host/live", key="stream"
+      final keySlash = key.lastIndexOf('/');
+      if (keySlash >= 0) {
+        final path = key.substring(0, keySlash);
+        final streamKey = key.substring(keySlash + 1);
+        return ('$url/$path', streamKey.isEmpty ? 'stream' : streamKey);
+      } else {
+        return ('$url/$key', 'stream');
+      }
     }
 
     // URL HAS a path
@@ -735,6 +768,69 @@ class LiveStreamProvider extends ChangeNotifier {
       await _controller!.setIsMuted(_isMuted);
       debugPrint('[OnAir] Mute: $_isMuted');
     } catch (_) {}
+  }
+
+  // ─── Video (camera) on/off ─────────────────────────────
+
+  void toggleVideo() {
+    _isVideoEnabled = !_isVideoEnabled;
+    debugPrint('[OnAir] Video enabled: $_isVideoEnabled');
+    notifyListeners();
+  }
+
+  // ─── Multi-camera ──────────────────────────────────────
+
+  Future<void> loadBackCameras() async {
+    if (_controller == null) return;
+    try {
+      _backCameras = await _controller!.getCameraList('back');
+      debugPrint('[OnAir] Back cameras: $_backCameras');
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[OnAir] Failed to load back cameras: $e');
+    }
+  }
+
+  Future<void> selectCamera(String cameraId) async {
+    if (_controller == null) return;
+    try {
+      await _controller!.setCameraById(cameraId);
+      _selectedCameraId = cameraId;
+      // Reset zoom when switching cameras
+      _currentZoom = 1.0;
+      notifyListeners();
+      // Reload max zoom for the new camera
+      loadZoomRange();
+      debugPrint('[OnAir] Camera selected: $cameraId');
+    } catch (e) {
+      debugPrint('[OnAir] Failed to select camera: $e');
+    }
+  }
+
+  // ─── Zoom ──────────────────────────────────────────────
+
+  Future<void> loadZoomRange() async {
+    if (_controller == null) return;
+    try {
+      _maxZoom = await _controller!.maxZoom;
+      if (_maxZoom < 1.0) _maxZoom = 1.0;
+      debugPrint('[OnAir] Max zoom: $_maxZoom');
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[OnAir] Failed to load max zoom: $e');
+    }
+  }
+
+  Future<void> setZoom(double zoom) async {
+    if (_controller == null) return;
+    final clamped = zoom.clamp(1.0, _maxZoom);
+    _currentZoom = clamped;
+    notifyListeners();
+    try {
+      await _controller!.setZoom(clamped);
+    } catch (e) {
+      debugPrint('[OnAir] Failed to set zoom: $e');
+    }
   }
 
   // ─── Native callbacks ─────────────────────────────────

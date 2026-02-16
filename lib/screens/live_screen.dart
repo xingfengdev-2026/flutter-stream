@@ -219,15 +219,6 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _showServers() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => ServerSheet(provider: _provider),
-    );
-  }
-
   void _showSettings() {
     showModalBottomSheet(
       context: context,
@@ -245,6 +236,18 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     );
   }
 
+  // ─── Pinch-to-zoom ──────────────────────────────────────
+  double _baseZoom = 1.0;
+
+  void _onScaleStart(ScaleStartDetails details) {
+    _baseZoom = _provider.currentZoom;
+  }
+
+  void _onScaleUpdate(ScaleUpdateDetails details) {
+    final newZoom = _baseZoom * details.scale;
+    _provider.setZoom(newZoom);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -253,9 +256,13 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
         fit: StackFit.expand,
         children: [
           if (_permissionsGranted && _isInitialized && _controller != null)
-            ApiVideoCameraPreview(
-              controller: _controller!,
-              fit: BoxFit.cover,
+            GestureDetector(
+              onScaleStart: _onScaleStart,
+              onScaleUpdate: _onScaleUpdate,
+              child: ApiVideoCameraPreview(
+                controller: _controller!,
+                fit: BoxFit.cover,
+              ),
             )
           else if (!_permissionsGranted)
             _PermissionPlaceholder(onRetry: _requestPermissions)
@@ -264,6 +271,18 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
               child: CircularProgressIndicator(
                   color: Color(0xFF6366F1), strokeWidth: 2),
             ),
+
+          // Black overlay when camera is "off" — camera keeps running
+          // underneath so the RTMP encoder continues to receive frames
+          // and the stream stays alive.
+          Consumer<LiveStreamProvider>(
+            builder: (_, p, __) {
+              if (!p.isVideoEnabled) {
+                return Container(color: Colors.black);
+              }
+              return const SizedBox.shrink();
+            },
+          ),
 
           // Top
           Positioned(
@@ -277,7 +296,6 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
             child: RepaintBoundary(child: _BottomControls(
               onRecord: _onRecordTap,
               onSettings: _showSettings,
-              onServers: _showServers,
             )),
           ),
         ],
@@ -364,12 +382,10 @@ class _TopBar extends StatelessWidget {
 class _BottomControls extends StatelessWidget {
   final VoidCallback onRecord;
   final VoidCallback onSettings;
-  final VoidCallback onServers;
 
   const _BottomControls({
     required this.onRecord,
     required this.onSettings,
-    required this.onServers,
   });
 
   @override
@@ -428,9 +444,12 @@ class _BottomControls extends StatelessWidget {
                         onTap: p.toggleMute,
                       ),
                       _CircleButton(
-                        icon: Icons.cameraswitch_rounded,
-                        label: 'Flip',
-                        onTap: p.toggleCamera,
+                        icon: p.isVideoEnabled
+                            ? Icons.videocam_rounded
+                            : Icons.videocam_off_rounded,
+                        label: p.isVideoEnabled ? 'Cam On' : 'Cam Off',
+                        active: !p.isVideoEnabled,
+                        onTap: p.toggleVideo,
                       ),
                       _RecordButton(
                         isLive: isLive || isReconnecting,
@@ -443,9 +462,9 @@ class _BottomControls extends StatelessWidget {
                         onTap: onSettings,
                       ),
                       _CircleButton(
-                        icon: Icons.dns_rounded,
-                        label: 'Servers',
-                        onTap: onServers,
+                        icon: Icons.cameraswitch_rounded,
+                        label: 'Flip',
+                        onTap: p.toggleCamera,
                       ),
                     ],
                   ),
