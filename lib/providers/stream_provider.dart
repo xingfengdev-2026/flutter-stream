@@ -282,50 +282,113 @@ class LiveStreamProvider extends ChangeNotifier {
     }
   }
 
+  /// Apply video config. During idle: just setVideoConfig.
+  /// During streaming: stop → reconfigure → restart (encoder needs reset for
+  /// resolution/fps changes; bitrate may also need this on some devices).
   Future<void> _applyVideoConfig() async {
     if (_controller == null) return;
-    try {
-      await _controller!.setVideoConfig(buildVideoConfig());
-      debugPrint('[OnAir] VideoConfig applied (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps}, bitrate=${_isNativeBitrate ? "native" : _customBitrate})');
-    } catch (e) {
-      debugPrint('[OnAir] setVideoConfig error: $e');
+
+    final isStreaming = _status == StreamStatus.streaming;
+
+    if (isStreaming && _activeServer != null) {
+      debugPrint('[OnAir] Restarting stream with new config...');
+      final server = _activeServer!;
+      final (effectiveUrl, effectiveKey) = splitUrlKey(server.url, server.streamKey);
+
+      _selfStopping = true;
+      try {
+        await _controller!.stopStreaming().timeout(const Duration(seconds: 2));
+      } catch (_) {}
+      _selfStopping = false;
+
+      try {
+        await _controller!.setVideoConfig(buildVideoConfig());
+      } catch (e) {
+        debugPrint('[OnAir] setVideoConfig error: $e');
+      }
+
+      // Brief pause for encoder to reconfigure
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      if (_status != StreamStatus.streaming || _controller == null || userStopped) return;
+
+      try {
+        await _controller!.startStreaming(
+          streamKey: effectiveKey,
+          url: effectiveUrl,
+        ).timeout(const Duration(seconds: 5));
+        debugPrint('[OnAir] Stream restarted with new config (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps}, bitrate=${_isNativeBitrate ? "native" : _customBitrate})');
+      } catch (e) {
+        debugPrint('[OnAir] Restart stream error: $e');
+        // Trigger reconnect to recover
+        _scheduleReconnect();
+      }
+    } else {
+      // Not streaming — just apply config for next stream
+      try {
+        await _controller!.setVideoConfig(buildVideoConfig());
+        debugPrint('[OnAir] VideoConfig applied (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps}, bitrate=${_isNativeBitrate ? "native" : _customBitrate})');
+      } catch (e) {
+        debugPrint('[OnAir] setVideoConfig error: $e');
+      }
     }
+  }
+
+  /// Debounce timer for config changes — avoids rapid stop/restart
+  /// when user taps settings quickly.
+  Timer? _configDebounce;
+
+  void _debouncedApplyVideoConfig() {
+    _configDebounce?.cancel();
+    _configDebounce = Timer(const Duration(milliseconds: 300), () {
+      _applyVideoConfig();
+    });
   }
 
   void setResolution(String res) {
     _resolution = res;
     notifyListeners();
-    _applyVideoConfig();
+    _debouncedApplyVideoConfig();
   }
 
   void setBitrateNative() {
     _isNativeBitrate = true;
     notifyListeners();
-    _applyVideoConfig();
+    _debouncedApplyVideoConfig();
   }
 
   void setBitrateCustom(int br) {
     _isNativeBitrate = false;
     _customBitrate = br;
     notifyListeners();
-    _applyVideoConfig();
+    _debouncedApplyVideoConfig();
   }
 
   void setFpsNative() {
     _isNativeFps = true;
     notifyListeners();
-    _applyVideoConfig();
+    _debouncedApplyVideoConfig();
   }
 
   void setFpsCustom(int f) {
     _isNativeFps = false;
     _customFps = f;
     notifyListeners();
-    _applyVideoConfig();
+    _debouncedApplyVideoConfig();
   }
 
   // ─── URL / StreamKey splitting ─────────────────────────
 
+  /// Split a raw URL + stream key into the (url, key) pair that the native
+  /// library expects.  The native library constructs the final RTMP URL as
+  /// `url + "/" + key`, so the URL must contain the app path.
+  ///
+  /// Examples:
+  ///   ("rtmp://host/live", "abc")       → ("rtmp://host/live", "abc")
+  ///   ("rtmp://host/live/abc", "")      → ("rtmp://host/live", "abc")
+  ///   ("rtmp://host", "abc")            → ("rtmp://host/live", "abc")  // add /live
+  ///   ("rtmp://host", "")               → ("rtmp://host/live", "stream")
+  ///   ("rtmp://host/app", "")           → ("rtmp://host", "app")
   static (String url, String key) splitUrlKey(String rawUrl, String rawKey) {
     final key = rawKey.trim();
     var url = rawUrl.trim();
@@ -334,24 +397,38 @@ class LiveStreamProvider extends ChangeNotifier {
       url = url.substring(0, url.length - 1);
     }
 
-    if (key.isNotEmpty) return (url, key);
-
     final schemeEnd = url.indexOf('://');
-    if (schemeEnd < 0) return (url, 'stream');
+    if (schemeEnd < 0) return (url.isEmpty ? 'rtmp://localhost' : url, key.isEmpty ? 'stream' : key);
 
     final afterScheme = url.substring(schemeEnd + 3);
     final firstSlash = afterScheme.indexOf('/');
 
-    if (firstSlash < 0) return (url, 'stream');
+    // URL has NO path (e.g. rtmp://192.168.1.23)
+    if (firstSlash < 0) {
+      if (key.isNotEmpty) {
+        // Add default /live app path so native gets: rtmp://host/live/key
+        return ('$url/live', key);
+      }
+      // No path, no key → use defaults
+      return ('$url/live', 'stream');
+    }
 
+    // URL HAS a path
+    if (key.isNotEmpty) {
+      // User provided both URL-with-path and key → pass as-is
+      return (url, key);
+    }
+
+    // Key is empty → extract from URL path
     final pathPart = afterScheme.substring(firstSlash + 1);
     final lastSlash = pathPart.lastIndexOf('/');
 
     if (lastSlash < 0) {
-      final base = url.substring(0, schemeEnd + 3 + firstSlash);
-      return (base, pathPart);
+      // Only one path segment (e.g. rtmp://host/live) → that's the app, use default key
+      return (url, 'stream');
     }
 
+    // Multiple path segments → last segment is the key
     final extractedKey = pathPart.substring(lastSlash + 1);
     final base = url.substring(0, url.length - extractedKey.length - 1);
     return (base, extractedKey);
@@ -607,6 +684,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _reconnectTimer?.cancel();
     _retryTimer?.cancel();
     _networkDebounce?.cancel();
+    _configDebounce?.cancel();
     _reconnectAttempt = 0;
     _pendingReconnect = false;
     _controllerBusy = false;
@@ -745,6 +823,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _timer?.cancel();
     _reconnectTimer?.cancel();
     _retryTimer?.cancel();
+    _configDebounce?.cancel();
     _stopWatchdog();
     _networkDebounce?.cancel();
     _connectivitySub?.cancel();
