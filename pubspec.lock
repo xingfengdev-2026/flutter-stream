@@ -4,10 +4,9 @@ packages:
   apivideo_live_stream:
     dependency: "direct main"
     description:
-      name: apivideo_live_stream
-      sha256: f873f8cdd3e35838d6e32ce55c1963f8889b9bfccf4a37f9ed86cfe79512b309
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/apivideo_live_stream"
+      relative: true
+    source: path
     version: "1.2.0"
   args:
     dependency: transitive

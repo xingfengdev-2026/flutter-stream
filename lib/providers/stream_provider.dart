@@ -34,6 +34,7 @@ class LiveStreamProvider extends ChangeNotifier {
   bool _controllerBusy = false;
   bool _pendingReconnect = false;
   bool _selfStopping = false;
+  Future<void>? _pendingSettingsTask;
 
   /// Generation counter: incremented on every force-reconnect / stop.
   /// Any in-flight attemptConnect with a stale generation bails out
@@ -62,13 +63,28 @@ class LiveStreamProvider extends ChangeNotifier {
   bool _isFrontCamera = false;
   bool get isFrontCamera => _isFrontCamera;
 
+  bool _isVideoEnabled = true;
+  bool get isVideoEnabled => _isVideoEnabled;
+
+  bool _isLocked = false;
+  bool get isLocked => _isLocked;
+
+  /// List of back cameras: [{id, label}, ...]
+  List<Map<String, String>> _backCameras = [];
+  List<Map<String, String>> get backCameras => _backCameras;
+
+  String? _selectedCameraId;
+  String? get selectedCameraId => _selectedCameraId;
+
+  double _currentZoom = 1.0;
+  double get currentZoom => _currentZoom;
+  double _minZoom = 1.0;
+  double get minZoom => _minZoom;
+  double _maxZoom = 1.0;
+  double get maxZoom => _maxZoom;
+
   String _resolution = 'Native';
   String get resolution => _resolution;
-
-  bool _isNativeBitrate = true;
-  bool get isNativeBitrate => _isNativeBitrate;
-  int _customBitrate = 10000000;
-  int get customBitrate => _customBitrate;
 
   bool _isNativeFps = true;
   bool get isNativeFps => _isNativeFps;
@@ -161,16 +177,19 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   Future<void> addServer(ServerConfig server) async {
+    if (_isLocked) return;
     await _serverService.addServer(server);
     await _loadServers();
   }
 
   Future<void> updateServer(int index, ServerConfig server) async {
+    if (_isLocked) return;
     await _serverService.updateServer(index, server);
     await _loadServers();
   }
 
   Future<void> removeServer(int index) async {
+    if (_isLocked) return;
     await _serverService.removeServer(index);
     await _loadServers();
   }
@@ -180,7 +199,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _recreationPending = false;
     notifyListeners();
     // Sync pending settings (e.g. mute set before streaming) to the new controller.
-    _applyPendingSettings();
+    _pendingSettingsTask = _applyPendingSettings();
   }
 
   /// Push all user-chosen settings to the current native controller.
@@ -188,13 +207,40 @@ class LiveStreamProvider extends ChangeNotifier {
   /// pre-set values (mute, video config) are not lost.
   Future<void> _applyPendingSettings() async {
     if (_controller == null) return;
+    // Apply camera first so pre-live front/back selection survives controller recreation.
+    try {
+      await _controller!.setCameraPosition(
+        _isFrontCamera ? CameraPosition.front : CameraPosition.back,
+      );
+      if (!_isFrontCamera && _selectedCameraId != null) {
+        await _controller!.setCameraById(_selectedCameraId!);
+      }
+    } catch (_) {}
     try {
       await _controller!.setIsMuted(_isMuted);
+    } catch (_) {}
+    // Sync video enabled state to native (important for stream start)
+    if (!_isVideoEnabled) {
+      try {
+        await _controller!.setVideoEnabled(false);
+      } catch (_) {}
+    }
+    // Load back cameras and max zoom after controller is ready
+    loadBackCameras();
+    loadZoomRange();
+  }
+
+  Future<void> _waitPendingSettings() async {
+    final task = _pendingSettingsTask;
+    if (task == null) return;
+    try {
+      await task;
     } catch (_) {}
   }
 
   void clearController() {
     _controller = null;
+    _pendingSettingsTask = null;
     notifyListeners();
   }
 
@@ -267,6 +313,10 @@ class LiveStreamProvider extends ChangeNotifier {
         return Resolution.RESOLUTION_720;
       case '1080p':
         return Resolution.RESOLUTION_1080;
+      case '1440p':
+        return Resolution.RESOLUTION_1440;
+      case '2160p':
+        return Resolution.RESOLUTION_2160;
       default:
         return Resolution.RESOLUTION_1080;
     }
@@ -274,12 +324,8 @@ class LiveStreamProvider extends ChangeNotifier {
 
   VideoConfig buildVideoConfig() {
     final res = mapResolution(_resolution);
-    final fps = _isNativeFps ? 30 : _customFps;
-    if (_isNativeBitrate) {
-      return VideoConfig.withDefaultBitrate(resolution: res, fps: fps);
-    } else {
-      return VideoConfig(bitrate: _customBitrate, resolution: res, fps: fps);
-    }
+    final fps = _isNativeFps ? 30 : _customFps.clamp(1, 30).toInt();
+    return VideoConfig.withDefaultBitrate(resolution: res, fps: fps);
   }
 
   /// Apply video config. During idle: just setVideoConfig.
@@ -317,7 +363,7 @@ class LiveStreamProvider extends ChangeNotifier {
           streamKey: effectiveKey,
           url: effectiveUrl,
         ).timeout(const Duration(seconds: 5));
-        debugPrint('[OnAir] Stream restarted with new config (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps}, bitrate=${_isNativeBitrate ? "native" : _customBitrate})');
+        debugPrint('[OnAir] Stream restarted with new config (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})');
       } catch (e) {
         debugPrint('[OnAir] Restart stream error: $e');
         // Trigger reconnect to recover
@@ -327,7 +373,7 @@ class LiveStreamProvider extends ChangeNotifier {
       // Not streaming — just apply config for next stream
       try {
         await _controller!.setVideoConfig(buildVideoConfig());
-        debugPrint('[OnAir] VideoConfig applied (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps}, bitrate=${_isNativeBitrate ? "native" : _customBitrate})');
+        debugPrint('[OnAir] VideoConfig applied (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})');
       } catch (e) {
         debugPrint('[OnAir] setVideoConfig error: $e');
       }
@@ -345,34 +391,30 @@ class LiveStreamProvider extends ChangeNotifier {
     });
   }
 
+  void toggleLock() {
+    _isLocked = !_isLocked;
+    notifyListeners();
+  }
+
   void setResolution(String res) {
+    if (_isLocked) return;
     _resolution = res;
     notifyListeners();
     _debouncedApplyVideoConfig();
   }
 
-  void setBitrateNative() {
-    _isNativeBitrate = true;
-    notifyListeners();
-    _debouncedApplyVideoConfig();
-  }
-
-  void setBitrateCustom(int br) {
-    _isNativeBitrate = false;
-    _customBitrate = br;
-    notifyListeners();
-    _debouncedApplyVideoConfig();
-  }
-
   void setFpsNative() {
+    if (_isLocked) return;
     _isNativeFps = true;
     notifyListeners();
     _debouncedApplyVideoConfig();
   }
 
   void setFpsCustom(int f) {
+    if (_isLocked) return;
     _isNativeFps = false;
-    _customFps = f;
+    // 60 fps is intentionally disabled due to connection instability.
+    _customFps = f.clamp(1, 30).toInt();
     notifyListeners();
     _debouncedApplyVideoConfig();
   }
@@ -383,11 +425,15 @@ class LiveStreamProvider extends ChangeNotifier {
   /// library expects.  The native library constructs the final RTMP URL as
   /// `url + "/" + key`, so the URL must contain the app path.
   ///
+  /// When the URL has NO path and a key is provided, the key is treated as
+  /// the path (app name + optional stream key separated by `/`).
+  ///
   /// Examples:
   ///   ("rtmp://host/live", "abc")       → ("rtmp://host/live", "abc")
   ///   ("rtmp://host/live/abc", "")      → ("rtmp://host/live", "abc")
-  ///   ("rtmp://host", "abc")            → ("rtmp://host/live", "abc")  // add /live
-  ///   ("rtmp://host", "")               → ("rtmp://host/live", "stream")
+  ///   ("rtmp://host", "live/abc")       → ("rtmp://host/live", "abc")
+  ///   ("rtmp://host", "live")           → ("rtmp://host/live", "stream")
+  ///   ("rtmp://host", "")               → ("rtmp://host", "stream")
   ///   ("rtmp://host/app", "")           → ("rtmp://host", "app")
   static (String url, String key) splitUrlKey(String rawUrl, String rawKey) {
     final key = rawKey.trim();
@@ -405,12 +451,19 @@ class LiveStreamProvider extends ChangeNotifier {
 
     // URL has NO path (e.g. rtmp://192.168.1.23)
     if (firstSlash < 0) {
-      if (key.isNotEmpty) {
-        // Add default /live app path so native gets: rtmp://host/live/key
-        return ('$url/live', key);
+      if (key.isEmpty) {
+        return (url, 'stream');
       }
-      // No path, no key → use defaults
-      return ('$url/live', 'stream');
+      // Treat key as path: "live/abc" → url="rtmp://host/live", key="abc"
+      //                     "live"     → url="rtmp://host/live", key="stream"
+      final keySlash = key.lastIndexOf('/');
+      if (keySlash >= 0) {
+        final path = key.substring(0, keySlash);
+        final streamKey = key.substring(keySlash + 1);
+        return ('$url/$path', streamKey.isEmpty ? 'stream' : streamKey);
+      } else {
+        return ('$url/$key', 'stream');
+      }
     }
 
     // URL HAS a path
@@ -508,6 +561,11 @@ class LiveStreamProvider extends ChangeNotifier {
       _scheduleRetry(server);
       return;
     }
+
+    // Ensure controller recreation has applied pending camera/mute states
+    // before opening stream.
+    await _waitPendingSettings();
+    if (userStopped || _generation != myGen || _controller == null) return;
 
     // TCP probe
     final reachable = await _probeServer(server.url);
@@ -692,6 +750,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _stopWatchdog();
 
     _recreationPending = false;
+    _pendingSettingsTask = null;
     if (_controller != null) {
       try {
         await _controller!.stopStreaming().timeout(const Duration(seconds: 2));
@@ -709,25 +768,37 @@ class LiveStreamProvider extends ChangeNotifier {
   // ─── Camera / Mic controls ──────────────────────────────
 
   Future<void> toggleCamera() async {
-    if (_controller == null) return;
-    try {
-      await _controller!.switchCamera();
-      _isFrontCamera = !_isFrontCamera;
-      notifyListeners();
-    } catch (_) {}
+    await setCameraPosition(!_isFrontCamera);
   }
 
   Future<void> setCameraPosition(bool front) async {
+    if (_isLocked) return;
     if (_controller == null) return;
     try {
       await _controller!.setCameraPosition(
           front ? CameraPosition.front : CameraPosition.back);
       _isFrontCamera = front;
+      if (front) {
+        _selectedCameraId = null;
+      } else {
+        await loadBackCameras();
+        if (_selectedCameraId != null) {
+          try {
+            await _controller!.setCameraById(_selectedCameraId!);
+          } catch (e) {
+            debugPrint('[OnAir] Failed to restore selected back camera: $e');
+          }
+        }
+      }
+      await loadZoomRange();
       notifyListeners();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[OnAir] Failed to set camera position: $e');
+    }
   }
 
   Future<void> toggleMute() async {
+    if (_isLocked) return;
     if (_controller == null) return;
     _isMuted = !_isMuted;
     notifyListeners();
@@ -735,6 +806,106 @@ class LiveStreamProvider extends ChangeNotifier {
       await _controller!.setIsMuted(_isMuted);
       debugPrint('[OnAir] Mute: $_isMuted');
     } catch (_) {}
+  }
+
+  // ─── Video (camera) on/off ─────────────────────────────
+
+  Future<void> toggleVideo() async {
+    if (_isLocked) return;
+    final next = !_isVideoEnabled;
+    _isVideoEnabled = next;
+    notifyListeners();
+    debugPrint('[OnAir] Video enabled: $_isVideoEnabled');
+    if (_controller != null) {
+      try {
+        await _controller!.setVideoEnabled(next);
+      } catch (e) {
+        debugPrint('[OnAir] setVideoEnabled error: $e');
+      }
+    }
+  }
+
+  // ─── Multi-camera ──────────────────────────────────────
+
+  Future<void> loadBackCameras() async {
+    if (_controller == null) return;
+    try {
+      _backCameras = await _controller!.getCameraList('back');
+      if (_backCameras.isEmpty) {
+        _selectedCameraId = null;
+      } else {
+        final hasSelected = _selectedCameraId != null &&
+            _backCameras.any((c) => c['id'] == _selectedCameraId);
+        _selectedCameraId = hasSelected
+            ? _selectedCameraId
+            : _backCameras.first['id'];
+      }
+      debugPrint('[OnAir] Back cameras: $_backCameras');
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[OnAir] Failed to load back cameras: $e');
+    }
+  }
+
+  Future<void> selectCamera(String cameraId) async {
+    if (_isLocked) return;
+    if (_controller == null) return;
+    try {
+      await _controller!.setCameraById(cameraId);
+      _selectedCameraId = cameraId;
+      final virtualZoom = _extractVirtualLensZoom(cameraId);
+      if (virtualZoom != null) {
+        _currentZoom = virtualZoom;
+      }
+      notifyListeners();
+      // Reload zoom range after camera/lens change.
+      await loadZoomRange();
+      debugPrint('[OnAir] Camera selected: $cameraId');
+    } catch (e) {
+      debugPrint('[OnAir] Failed to select camera: $e');
+    }
+  }
+
+  double? _extractVirtualLensZoom(String cameraId) {
+    if (!cameraId.startsWith('virtual:')) return null;
+    final idx = cameraId.lastIndexOf(':');
+    if (idx < 0 || idx >= cameraId.length - 1) return null;
+    return double.tryParse(cameraId.substring(idx + 1));
+  }
+
+  // ─── Zoom ──────────────────────────────────────────────
+
+  Future<void> loadZoomRange() async {
+    if (_controller == null) return;
+    try {
+      _maxZoom = await _controller!.maxZoom;
+      if (_maxZoom < 1.0) _maxZoom = 1.0;
+    } catch (e) {
+      debugPrint('[OnAir] Failed to load max zoom: $e');
+    }
+    try {
+      _minZoom = await _controller!.minZoom;
+      if (_minZoom > 1.0) _minZoom = 1.0;
+    } catch (e) {
+      _minZoom = 1.0;
+      debugPrint('[OnAir] Failed to load min zoom: $e');
+    }
+    _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom).toDouble();
+    debugPrint('[OnAir] Zoom range: $_minZoom - $_maxZoom');
+    notifyListeners();
+  }
+
+  Future<void> setZoom(double zoom) async {
+    if (_isLocked) return;
+    if (_controller == null) return;
+    final clamped = zoom.clamp(_minZoom, _maxZoom);
+    _currentZoom = clamped;
+    notifyListeners();
+    try {
+      await _controller!.setZoom(clamped);
+    } catch (e) {
+      debugPrint('[OnAir] Failed to set zoom: $e');
+    }
   }
 
   // ─── Native callbacks ─────────────────────────────────
@@ -827,6 +998,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _stopWatchdog();
     _networkDebounce?.cancel();
     _connectivitySub?.cancel();
+    _pendingSettingsTask = null;
     _controller?.dispose();
     WakelockPlus.disable();
     ForegroundService.stop();

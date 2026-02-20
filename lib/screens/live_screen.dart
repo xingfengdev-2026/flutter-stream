@@ -106,6 +106,8 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     _controller = ApiVideoLiveStreamController(
       initialAudioConfig: AudioConfig(),
       initialVideoConfig: _provider.buildVideoConfig(),
+      initialCameraPosition:
+          _provider.isFrontCamera ? CameraPosition.front : CameraPosition.back,
       onConnectionSuccess: () {
         if (_recreateGen == myGen) _provider.onConnectionSuccess();
       },
@@ -156,6 +158,8 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       final ctrl = ApiVideoLiveStreamController(
         initialAudioConfig: AudioConfig(),
         initialVideoConfig: _provider.buildVideoConfig(),
+        initialCameraPosition:
+            _provider.isFrontCamera ? CameraPosition.front : CameraPosition.back,
         onConnectionSuccess: () {
           if (_recreateGen == myGen) _provider.onConnectionSuccess();
         },
@@ -219,15 +223,6 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _showServers() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => ServerSheet(provider: _provider),
-    );
-  }
-
   void _showSettings() {
     showModalBottomSheet(
       context: context,
@@ -245,6 +240,18 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     );
   }
 
+  // ─── Pinch-to-zoom ──────────────────────────────────────
+  double _baseZoom = 1.0;
+
+  void _onScaleStart(ScaleStartDetails details) {
+    _baseZoom = _provider.currentZoom;
+  }
+
+  void _onScaleUpdate(ScaleUpdateDetails details) {
+    final newZoom = _baseZoom * details.scale;
+    _provider.setZoom(newZoom);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -253,9 +260,13 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
         fit: StackFit.expand,
         children: [
           if (_permissionsGranted && _isInitialized && _controller != null)
-            ApiVideoCameraPreview(
-              controller: _controller!,
-              fit: BoxFit.cover,
+            GestureDetector(
+              onScaleStart: _onScaleStart,
+              onScaleUpdate: _onScaleUpdate,
+              child: ApiVideoCameraPreview(
+                controller: _controller!,
+                fit: BoxFit.cover,
+              ),
             )
           else if (!_permissionsGranted)
             _PermissionPlaceholder(onRetry: _requestPermissions)
@@ -277,7 +288,6 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
             child: RepaintBoundary(child: _BottomControls(
               onRecord: _onRecordTap,
               onSettings: _showSettings,
-              onServers: _showServers,
             )),
           ),
         ],
@@ -307,7 +317,7 @@ class _TopBar extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Consumer<LiveStreamProvider>(
-            builder: (_, p, __) {
+            builder: (_, p, child) {
               final isLive = p.status == StreamStatus.streaming;
               final isReconnecting = p.status == StreamStatus.reconnecting;
               return Row(
@@ -364,12 +374,10 @@ class _TopBar extends StatelessWidget {
 class _BottomControls extends StatelessWidget {
   final VoidCallback onRecord;
   final VoidCallback onSettings;
-  final VoidCallback onServers;
 
   const _BottomControls({
     required this.onRecord,
     required this.onSettings,
-    required this.onServers,
   });
 
   @override
@@ -388,7 +396,7 @@ class _BottomControls extends StatelessWidget {
       child: SafeArea(
         top: false,
         child: Consumer<LiveStreamProvider>(
-          builder: (_, p, __) {
+          builder: (_, p, child) {
             final isLive = p.status == StreamStatus.streaming;
             final isConnecting = p.status == StreamStatus.connecting;
             final isReconnecting = p.status == StreamStatus.reconnecting;
@@ -425,12 +433,13 @@ class _BottomControls extends StatelessWidget {
                             : Icons.mic_rounded,
                         label: p.isMuted ? 'Unmute' : 'Mute',
                         active: p.isMuted,
-                        onTap: p.toggleMute,
+                        onTap: p.isLocked ? null : p.toggleMute,
                       ),
                       _CircleButton(
-                        icon: Icons.cameraswitch_rounded,
-                        label: 'Flip',
-                        onTap: p.toggleCamera,
+                        icon: p.isLocked ? Icons.lock_rounded : Icons.lock_open_rounded,
+                        label: p.isLocked ? 'Locked' : 'Lock',
+                        active: p.isLocked,
+                        onTap: p.toggleLock,
                       ),
                       _RecordButton(
                         isLive: isLive || isReconnecting,
@@ -440,12 +449,12 @@ class _BottomControls extends StatelessWidget {
                       _CircleButton(
                         icon: Icons.tune_rounded,
                         label: 'Settings',
-                        onTap: onSettings,
+                        onTap: p.isLocked ? null : onSettings,
                       ),
                       _CircleButton(
-                        icon: Icons.dns_rounded,
-                        label: 'Servers',
-                        onTap: onServers,
+                        icon: Icons.cameraswitch_rounded,
+                        label: 'Flip',
+                        onTap: p.isLocked ? null : p.toggleCamera,
                       ),
                     ],
                   ),
@@ -502,7 +511,7 @@ class _StatusBanner extends StatelessWidget {
 class _CircleButton extends StatelessWidget {
   final IconData icon;
   final String label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final bool active;
 
   const _CircleButton({
@@ -514,6 +523,7 @@ class _CircleButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final enabled = onTap != null;
     return GestureDetector(
       onTap: onTap,
       child: Column(
@@ -524,17 +534,27 @@ class _CircleButton extends StatelessWidget {
             height: 48,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: active
+              color: !enabled
+                  ? Colors.white.withValues(alpha: 0.06)
+                  : active
                   ? Colors.red.withValues(alpha: 0.3)
                   : Colors.white.withValues(alpha: 0.12),
             ),
             child: Icon(icon,
-                color: active ? Colors.red.shade300 : Colors.white, size: 22),
+                color: !enabled
+                    ? Colors.white30
+                    : active
+                        ? Colors.red.shade300
+                        : Colors.white,
+                size: 22),
           ),
           const SizedBox(height: 6),
           Text(
             label,
-            style: const TextStyle(color: Colors.white60, fontSize: 11),
+            style: TextStyle(
+              color: enabled ? Colors.white60 : Colors.white38,
+              fontSize: 11,
+            ),
           ),
         ],
       ),
