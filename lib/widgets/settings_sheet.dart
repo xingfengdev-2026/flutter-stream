@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../models/stream_config.dart';
 import '../providers/stream_provider.dart';
@@ -70,33 +69,22 @@ class SettingsSheet extends StatelessWidget {
                     ),
                   ],
                 ),
-                // Back camera lens picker (only show when >1 back camera and back is selected)
-                if (!p.isFrontCamera && p.backCameras.length > 1) ...[
+                // Back camera lens picker
+                if (!p.isFrontCamera && p.backCameras.isNotEmpty) ...[
                   const SizedBox(height: 12),
                   _sectionTitle('Lens'),
                   const SizedBox(height: 8),
-                  _ChipRow(
-                    options: p.backCameras.map((c) => c['label'] ?? c['id']!).toList(),
-                    selected: p.selectedCameraId != null
-                        ? (p.backCameras
-                            .where((c) => c['id'] == p.selectedCameraId)
-                            .map((c) => c['label'] ?? c['id']!)
-                            .firstOrNull ?? '')
-                        : (p.backCameras.isNotEmpty
-                            ? (p.backCameras.first['label'] ?? p.backCameras.first['id']!)
-                            : ''),
-                    onSelected: (label) {
-                      final cam = p.backCameras.firstWhere(
-                        (c) => (c['label'] ?? c['id']!) == label,
-                      );
-                      p.selectCamera(cam['id']!);
-                    },
+                  _LensChipRow(
+                    cameras: p.backCameras,
+                    selectedId:
+                        p.selectedCameraId ?? (p.backCameras.first['id'] ?? ''),
+                    onSelected: (cameraId) => p.selectCamera(cameraId),
                   ),
                 ],
                 const SizedBox(height: 22),
 
-                // Zoom
-                if (p.maxZoom > 1.0) ...[
+                // Zoom slider
+                if (p.maxZoom > 1.0 || p.minZoom < 1.0) ...[
                   _sectionTitle('Zoom (${p.currentZoom.toStringAsFixed(1)}x)'),
                   const SizedBox(height: 4),
                   SliderTheme(
@@ -109,8 +97,8 @@ class SettingsSheet extends StatelessWidget {
                       thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
                     ),
                     child: Slider(
-                      value: p.currentZoom.clamp(1.0, p.maxZoom),
-                      min: 1.0,
+                      value: p.currentZoom.clamp(p.minZoom, p.maxZoom),
+                      min: p.minZoom,
                       max: p.maxZoom,
                       onChanged: (v) => p.setZoom(v),
                     ),
@@ -150,17 +138,6 @@ class SettingsSheet extends StatelessWidget {
                       p.setFpsCustom(int.parse(v.split(' ').first));
                     }
                   },
-                ),
-                const SizedBox(height: 22),
-
-                // Bitrate
-                _sectionTitle('Max Bitrate'),
-                const SizedBox(height: 8),
-                _BitrateSection(
-                  isNative: p.isNativeBitrate,
-                  customBitrate: p.customBitrate,
-                  onSetNative: p.setBitrateNative,
-                  onSetCustom: p.setBitrateCustom,
                 ),
                 const SizedBox(height: 22),
 
@@ -323,248 +300,6 @@ class SettingsSheet extends StatelessWidget {
   }
 }
 
-// ─── Bitrate Section (Native toggle + custom input) ──────
-
-class _BitrateSection extends StatelessWidget {
-  final bool isNative;
-  final int customBitrate;
-  final VoidCallback onSetNative;
-  final ValueChanged<int> onSetCustom;
-
-  const _BitrateSection({
-    required this.isNative,
-    required this.customBitrate,
-    required this.onSetNative,
-    required this.onSetCustom,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            _MiniChip(
-              label: 'Native',
-              selected: isNative,
-              onTap: onSetNative,
-            ),
-            const SizedBox(width: 8),
-            _MiniChip(
-              label: 'Custom',
-              selected: !isNative,
-              onTap: () {
-                if (isNative) onSetCustom(customBitrate);
-              },
-            ),
-          ],
-        ),
-        if (!isNative) ...[
-          const SizedBox(height: 10),
-          _BitrateInput(
-            bitrate: customBitrate,
-            onChanged: onSetCustom,
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-// ─── Mini Chip for Native/Custom toggle ──────────────────
-
-class _MiniChip extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback? onTap;
-
-  const _MiniChip({
-    required this.label,
-    required this.selected,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          color: selected
-              ? const Color(0xFF6366F1)
-              : Colors.white.withValues(alpha: 0.06),
-          border: selected
-              ? null
-              : Border.all(color: Colors.white.withValues(alpha: 0.06)),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? Colors.white : Colors.white54,
-            fontSize: 13,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Bitrate Input ───────────────────────────────────────
-
-class _BitrateInput extends StatefulWidget {
-  final int bitrate;
-  final ValueChanged<int> onChanged;
-
-  const _BitrateInput({
-    required this.bitrate,
-    required this.onChanged,
-  });
-
-  @override
-  State<_BitrateInput> createState() => _BitrateInputState();
-}
-
-class _BitrateInputState extends State<_BitrateInput> {
-  late TextEditingController _textCtrl;
-  bool _isMbps = true;
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.bitrate >= 1000000) {
-      _isMbps = true;
-      final mbps = widget.bitrate / 1000000;
-      _textCtrl = TextEditingController(text: _formatNumber(mbps));
-    } else {
-      _isMbps = false;
-      final kbps = widget.bitrate / 1000;
-      _textCtrl = TextEditingController(text: _formatNumber(kbps));
-    }
-  }
-
-  String _formatNumber(double v) {
-    if (v == v.roundToDouble()) return v.toInt().toString();
-    return v.toStringAsFixed(2).replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
-  }
-
-  @override
-  void didUpdateWidget(_BitrateInput old) {
-    super.didUpdateWidget(old);
-    if (old.bitrate != widget.bitrate) {
-      final val = _isMbps
-          ? widget.bitrate / 1000000
-          : widget.bitrate / 1000;
-      _textCtrl.text = _formatNumber(val);
-    }
-  }
-
-  void _apply() {
-    final val = double.tryParse(_textCtrl.text);
-    if (val == null || val <= 0) return;
-    final bps = _isMbps ? (val * 1000000).toInt() : (val * 1000).toInt();
-    widget.onChanged(bps);
-  }
-
-  void _toggleUnit() {
-    final currentBps = _isMbps
-        ? (double.tryParse(_textCtrl.text) ?? 0) * 1000000
-        : (double.tryParse(_textCtrl.text) ?? 0) * 1000;
-
-    setState(() {
-      _isMbps = !_isMbps;
-      final newVal = _isMbps ? currentBps / 1000000 : currentBps / 1000;
-      _textCtrl.text = _formatNumber(newVal);
-    });
-  }
-
-  @override
-  void dispose() {
-    _textCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.06),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.08),
-              ),
-            ),
-            child: TextField(
-              controller: _textCtrl,
-              enabled: true,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'[\d.]')),
-              ],
-              onChanged: (_) => _apply(),
-              onSubmitted: (_) => _apply(),
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-              ),
-              decoration: InputDecoration(
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                border: InputBorder.none,
-                hintText: _isMbps ? 'e.g. 10' : 'e.g. 5000',
-                hintStyle: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.2),
-                  fontSize: 16,
-                ),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        // Unit toggle
-        GestureDetector(
-          onTap: _toggleUnit,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: const Color(0xFF6366F1).withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: const Color(0xFF6366F1).withValues(alpha: 0.4),
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  _isMbps ? 'Mbps' : 'Kbps',
-                  style: const TextStyle(
-                    color: Color(0xFF818CF8),
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                const Icon(Icons.swap_horiz_rounded,
-                    color: Color(0xFF818CF8), size: 16),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 // ─── Camera Option ───────────────────────────────────────
 
 class _CameraOption extends StatelessWidget {
@@ -681,6 +416,57 @@ class _ServerRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _LensChipRow extends StatelessWidget {
+  final List<Map<String, String>> cameras;
+  final String selectedId;
+  final ValueChanged<String>? onSelected;
+
+  const _LensChipRow({
+    required this.cameras,
+    required this.selectedId,
+    this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: cameras.map((camera) {
+        final id = camera['id'] ?? '';
+        final label = camera['label'] ?? id;
+        final isSel = id == selectedId;
+        return GestureDetector(
+          onTap: (onSelected != null && id.isNotEmpty)
+              ? () => onSelected!(id)
+              : null,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              color: isSel
+                  ? const Color(0xFF6366F1)
+                  : Colors.white.withValues(alpha: 0.06),
+              border: isSel
+                  ? null
+                  : Border.all(color: Colors.white.withValues(alpha: 0.06)),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                color: isSel ? Colors.white : Colors.white54,
+                fontSize: 13,
+                fontWeight: isSel ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ),
+        );
+      }).toList(),
     );
   }
 }

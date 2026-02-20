@@ -107,6 +107,14 @@ abstract class ApiVideoLiveStreamPlatform extends PlatformInterface {
     throw UnimplementedError('getMaxZoom() has not been implemented.');
   }
 
+  Future<double> getMinZoom() {
+    throw UnimplementedError('getMinZoom() has not been implemented.');
+  }
+
+  Future<void> setBitrate(int bitrate) {
+    throw UnimplementedError('setBitrate() has not been implemented.');
+  }
+
   /// Returns a Stream of [LiveStreamingEvent]s.
   Stream<LiveStreamingEvent> liveStreamingEventsFor(int textureId) {
     throw UnimplementedError(

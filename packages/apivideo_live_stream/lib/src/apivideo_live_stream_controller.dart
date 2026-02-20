@@ -224,6 +224,18 @@ class ApiVideoLiveStreamController {
     return _platform.getMaxZoom();
   }
 
+  /// Gets the minimum zoom ratio supported by the current camera.
+  /// Values < 1.0 indicate ultra-wide lens support.
+  Future<double> get minZoom {
+    return _platform.getMinZoom();
+  }
+
+  /// Dynamically sets the encoder bitrate (bps) without stopping the stream.
+  /// Uses MediaCodec.setParameters() internally.
+  Future<void> setBitrate(int bitrate) {
+    return _platform.setBitrate(bitrate);
+  }
+
   /// Builds the preview widget.
   @internal
   Widget buildPreview() {

@@ -309,6 +309,29 @@ class MethodCallHandlerImpl(
                 }
             }
 
+            "getMinZoom" -> {
+                try {
+                    result.success(mapOf("minZoom" to flutterView!!.getMinZoom()))
+                } catch (e: Exception) {
+                    result.error("failed_to_get_min_zoom", e.message, null)
+                }
+            }
+
+            "setBitrate" -> {
+                val bitrate = try {
+                    ((call.arguments as Map<*, *>)["bitrate"] as Number).toInt()
+                } catch (e: Exception) {
+                    result.error("invalid_parameter", "Invalid bitrate", e)
+                    return
+                }
+                try {
+                    flutterView!!.setBitrate(bitrate)
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("failed_to_set_bitrate", e.message, null)
+                }
+            }
+
             else -> result.notImplemented()
         }
     }

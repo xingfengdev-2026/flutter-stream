@@ -135,6 +135,19 @@ class ApiVideoMobileLiveStreamPlatform extends ApiVideoLiveStreamPlatform {
   }
 
   @override
+  Future<double> getMinZoom() async {
+    final Map<dynamic, dynamic> reply =
+        await _channel.invokeMethod('getMinZoom') as Map;
+    return (reply['minZoom'] as num).toDouble();
+  }
+
+  @override
+  Future<void> setBitrate(int bitrate) {
+    return _channel
+        .invokeMethod('setBitrate', <String, dynamic>{'bitrate': bitrate});
+  }
+
+  @override
   Future<Size?> getVideoSize() async {
     final Map<dynamic, dynamic> reply =
         await _channel.invokeMethod('getVideoSize') as Map;

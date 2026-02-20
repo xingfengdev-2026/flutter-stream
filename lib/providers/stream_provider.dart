@@ -74,16 +74,13 @@ class LiveStreamProvider extends ChangeNotifier {
 
   double _currentZoom = 1.0;
   double get currentZoom => _currentZoom;
+  double _minZoom = 1.0;
+  double get minZoom => _minZoom;
   double _maxZoom = 1.0;
   double get maxZoom => _maxZoom;
 
   String _resolution = 'Native';
   String get resolution => _resolution;
-
-  bool _isNativeBitrate = true;
-  bool get isNativeBitrate => _isNativeBitrate;
-  int _customBitrate = 10000000;
-  int get customBitrate => _customBitrate;
 
   bool _isNativeFps = true;
   bool get isNativeFps => _isNativeFps;
@@ -206,6 +203,12 @@ class LiveStreamProvider extends ChangeNotifier {
     try {
       await _controller!.setIsMuted(_isMuted);
     } catch (_) {}
+    // Sync video enabled state to native (important for stream start)
+    if (!_isVideoEnabled) {
+      try {
+        await _controller!.setVideoEnabled(false);
+      } catch (_) {}
+    }
     // Load back cameras and max zoom after controller is ready
     loadBackCameras();
     loadZoomRange();
@@ -297,11 +300,7 @@ class LiveStreamProvider extends ChangeNotifier {
   VideoConfig buildVideoConfig() {
     final res = mapResolution(_resolution);
     final fps = _isNativeFps ? 30 : _customFps;
-    if (_isNativeBitrate) {
-      return VideoConfig.withDefaultBitrate(resolution: res, fps: fps);
-    } else {
-      return VideoConfig(bitrate: _customBitrate, resolution: res, fps: fps);
-    }
+    return VideoConfig.withDefaultBitrate(resolution: res, fps: fps);
   }
 
   /// Apply video config. During idle: just setVideoConfig.
@@ -339,7 +338,7 @@ class LiveStreamProvider extends ChangeNotifier {
           streamKey: effectiveKey,
           url: effectiveUrl,
         ).timeout(const Duration(seconds: 5));
-        debugPrint('[OnAir] Stream restarted with new config (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps}, bitrate=${_isNativeBitrate ? "native" : _customBitrate})');
+        debugPrint('[OnAir] Stream restarted with new config (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})');
       } catch (e) {
         debugPrint('[OnAir] Restart stream error: $e');
         // Trigger reconnect to recover
@@ -349,7 +348,7 @@ class LiveStreamProvider extends ChangeNotifier {
       // Not streaming — just apply config for next stream
       try {
         await _controller!.setVideoConfig(buildVideoConfig());
-        debugPrint('[OnAir] VideoConfig applied (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps}, bitrate=${_isNativeBitrate ? "native" : _customBitrate})');
+        debugPrint('[OnAir] VideoConfig applied (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})');
       } catch (e) {
         debugPrint('[OnAir] setVideoConfig error: $e');
       }
@@ -369,19 +368,6 @@ class LiveStreamProvider extends ChangeNotifier {
 
   void setResolution(String res) {
     _resolution = res;
-    notifyListeners();
-    _debouncedApplyVideoConfig();
-  }
-
-  void setBitrateNative() {
-    _isNativeBitrate = true;
-    notifyListeners();
-    _debouncedApplyVideoConfig();
-  }
-
-  void setBitrateCustom(int br) {
-    _isNativeBitrate = false;
-    _customBitrate = br;
     notifyListeners();
     _debouncedApplyVideoConfig();
   }
@@ -742,12 +728,7 @@ class LiveStreamProvider extends ChangeNotifier {
   // ─── Camera / Mic controls ──────────────────────────────
 
   Future<void> toggleCamera() async {
-    if (_controller == null) return;
-    try {
-      await _controller!.switchCamera();
-      _isFrontCamera = !_isFrontCamera;
-      notifyListeners();
-    } catch (_) {}
+    await setCameraPosition(!_isFrontCamera);
   }
 
   Future<void> setCameraPosition(bool front) async {
@@ -756,8 +737,23 @@ class LiveStreamProvider extends ChangeNotifier {
       await _controller!.setCameraPosition(
           front ? CameraPosition.front : CameraPosition.back);
       _isFrontCamera = front;
+      if (front) {
+        _selectedCameraId = null;
+      } else {
+        await loadBackCameras();
+        if (_selectedCameraId != null) {
+          try {
+            await _controller!.setCameraById(_selectedCameraId!);
+          } catch (e) {
+            debugPrint('[OnAir] Failed to restore selected back camera: $e');
+          }
+        }
+      }
+      await loadZoomRange();
       notifyListeners();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[OnAir] Failed to set camera position: $e');
+    }
   }
 
   Future<void> toggleMute() async {
@@ -772,10 +768,18 @@ class LiveStreamProvider extends ChangeNotifier {
 
   // ─── Video (camera) on/off ─────────────────────────────
 
-  void toggleVideo() {
-    _isVideoEnabled = !_isVideoEnabled;
-    debugPrint('[OnAir] Video enabled: $_isVideoEnabled');
+  Future<void> toggleVideo() async {
+    final next = !_isVideoEnabled;
+    _isVideoEnabled = next;
     notifyListeners();
+    debugPrint('[OnAir] Video enabled: $_isVideoEnabled');
+    if (_controller != null) {
+      try {
+        await _controller!.setVideoEnabled(next);
+      } catch (e) {
+        debugPrint('[OnAir] setVideoEnabled error: $e');
+      }
+    }
   }
 
   // ─── Multi-camera ──────────────────────────────────────
@@ -784,6 +788,15 @@ class LiveStreamProvider extends ChangeNotifier {
     if (_controller == null) return;
     try {
       _backCameras = await _controller!.getCameraList('back');
+      if (_backCameras.isEmpty) {
+        _selectedCameraId = null;
+      } else {
+        final hasSelected = _selectedCameraId != null &&
+            _backCameras.any((c) => c['id'] == _selectedCameraId);
+        _selectedCameraId = hasSelected
+            ? _selectedCameraId
+            : _backCameras.first['id'];
+      }
       debugPrint('[OnAir] Back cameras: $_backCameras');
       notifyListeners();
     } catch (e) {
@@ -796,15 +809,24 @@ class LiveStreamProvider extends ChangeNotifier {
     try {
       await _controller!.setCameraById(cameraId);
       _selectedCameraId = cameraId;
-      // Reset zoom when switching cameras
-      _currentZoom = 1.0;
+      final virtualZoom = _extractVirtualLensZoom(cameraId);
+      if (virtualZoom != null) {
+        _currentZoom = virtualZoom;
+      }
       notifyListeners();
-      // Reload max zoom for the new camera
-      loadZoomRange();
+      // Reload zoom range after camera/lens change.
+      await loadZoomRange();
       debugPrint('[OnAir] Camera selected: $cameraId');
     } catch (e) {
       debugPrint('[OnAir] Failed to select camera: $e');
     }
+  }
+
+  double? _extractVirtualLensZoom(String cameraId) {
+    if (!cameraId.startsWith('virtual:')) return null;
+    final idx = cameraId.lastIndexOf(':');
+    if (idx < 0 || idx >= cameraId.length - 1) return null;
+    return double.tryParse(cameraId.substring(idx + 1));
   }
 
   // ─── Zoom ──────────────────────────────────────────────
@@ -814,16 +836,24 @@ class LiveStreamProvider extends ChangeNotifier {
     try {
       _maxZoom = await _controller!.maxZoom;
       if (_maxZoom < 1.0) _maxZoom = 1.0;
-      debugPrint('[OnAir] Max zoom: $_maxZoom');
-      notifyListeners();
     } catch (e) {
       debugPrint('[OnAir] Failed to load max zoom: $e');
     }
+    try {
+      _minZoom = await _controller!.minZoom;
+      if (_minZoom > 1.0) _minZoom = 1.0;
+    } catch (e) {
+      _minZoom = 1.0;
+      debugPrint('[OnAir] Failed to load min zoom: $e');
+    }
+    _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom).toDouble();
+    debugPrint('[OnAir] Zoom range: $_minZoom - $_maxZoom');
+    notifyListeners();
   }
 
   Future<void> setZoom(double zoom) async {
     if (_controller == null) return;
-    final clamped = zoom.clamp(1.0, _maxZoom);
+    final clamped = zoom.clamp(_minZoom, _maxZoom);
     _currentZoom = clamped;
     notifyListeners();
     try {
