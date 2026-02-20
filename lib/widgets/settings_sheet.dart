@@ -58,14 +58,14 @@ class SettingsSheet extends StatelessWidget {
                       icon: Icons.camera_rear_rounded,
                       label: 'Back',
                       selected: !p.isFrontCamera,
-                      onTap: () => p.setCameraPosition(false),
+                      onTap: p.isLocked ? null : () => p.setCameraPosition(false),
                     ),
                     const SizedBox(width: 10),
                     _CameraOption(
                       icon: Icons.camera_front_rounded,
                       label: 'Front',
                       selected: p.isFrontCamera,
-                      onTap: () => p.setCameraPosition(true),
+                      onTap: p.isLocked ? null : () => p.setCameraPosition(true),
                     ),
                   ],
                 ),
@@ -78,7 +78,9 @@ class SettingsSheet extends StatelessWidget {
                     cameras: p.backCameras,
                     selectedId:
                         p.selectedCameraId ?? (p.backCameras.first['id'] ?? ''),
-                    onSelected: (cameraId) => p.selectCamera(cameraId),
+                    onSelected: p.isLocked
+                        ? null
+                        : (cameraId) => p.selectCamera(cameraId),
                   ),
                 ],
                 const SizedBox(height: 22),
@@ -100,7 +102,7 @@ class SettingsSheet extends StatelessWidget {
                       value: p.currentZoom.clamp(p.minZoom, p.maxZoom),
                       min: p.minZoom,
                       max: p.maxZoom,
-                      onChanged: (v) => p.setZoom(v),
+                      onChanged: p.isLocked ? null : (v) => p.setZoom(v),
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -121,7 +123,7 @@ class SettingsSheet extends StatelessWidget {
                     '2160p',
                   ],
                   selected: p.resolution,
-                  onSelected: p.setResolution,
+                  onSelected: p.isLocked ? null : p.setResolution,
                 ),
                 const SizedBox(height: 22),
 
@@ -129,9 +131,9 @@ class SettingsSheet extends StatelessWidget {
                 _sectionTitle('Frame Rate'),
                 const SizedBox(height: 8),
                 _ChipRow(
-                  options: const ['Native', '15 fps', '24 fps', '30 fps', '60 fps'],
+                  options: const ['Native', '15 fps', '24 fps', '30 fps'],
                   selected: p.isNativeFps ? 'Native' : '${p.customFps} fps',
-                  onSelected: (v) {
+                  onSelected: p.isLocked ? null : (v) {
                     if (v == 'Native') {
                       p.setFpsNative();
                     } else {
@@ -147,9 +149,10 @@ class SettingsSheet extends StatelessWidget {
                     _sectionTitle('Stream Servers'),
                     const Spacer(),
                     GestureDetector(
-                      onTap: () => _showAddEditServerDialog(context, p),
-                      child: const Icon(Icons.add_circle_outline,
-                          color: Color(0xFF818CF8), size: 20),
+                      onTap: p.isLocked ? null : () => _showAddEditServerDialog(context, p),
+                      child: Icon(Icons.add_circle_outline,
+                          color: p.isLocked ? Colors.white24 : const Color(0xFF818CF8),
+                          size: 20),
                     ),
                   ],
                 ),
@@ -172,8 +175,8 @@ class SettingsSheet extends StatelessWidget {
                     final s = p.servers[i];
                     return _ServerRow(
                       server: s,
-                      onEdit: () => _showAddEditServerDialog(context, p, index: i),
-                      onDelete: () => _confirmDeleteServer(context, p, i),
+                      onEdit: p.isLocked ? null : () => _showAddEditServerDialog(context, p, index: i),
+                      onDelete: p.isLocked ? null : () => _confirmDeleteServer(context, p, i),
                     );
                   }),
                 const SizedBox(height: 8),
@@ -199,6 +202,7 @@ class SettingsSheet extends StatelessWidget {
   }
 
   void _showAddEditServerDialog(BuildContext context, LiveStreamProvider p, {int? index}) {
+    if (p.isLocked) return;
     final isEdit = index != null;
     final server = isEdit ? p.servers[index] : null;
     final nameCtrl = TextEditingController(text: server?.name ?? '');
@@ -233,7 +237,7 @@ class SettingsSheet extends StatelessWidget {
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: const Color(0xFF6366F1)),
-            onPressed: () {
+            onPressed: p.isLocked ? null : () {
               final name = nameCtrl.text.trim();
               final url = urlCtrl.text.trim();
               if (name.isEmpty || url.isEmpty) return;
@@ -273,6 +277,7 @@ class SettingsSheet extends StatelessWidget {
   }
 
   void _confirmDeleteServer(BuildContext context, LiveStreamProvider p, int index) {
+    if (p.isLocked) return;
     final name = p.servers[index].name;
     showDialog(
       context: context,
@@ -360,8 +365,8 @@ class _CameraOption extends StatelessWidget {
 
 class _ServerRow extends StatelessWidget {
   final ServerConfig server;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
+  final VoidCallback? onEdit;
+  final VoidCallback? onDelete;
 
   const _ServerRow({
     required this.server,
@@ -401,17 +406,25 @@ class _ServerRow extends StatelessWidget {
           ),
           GestureDetector(
             onTap: onEdit,
-            child: const Padding(
-              padding: EdgeInsets.all(4),
-              child: Icon(Icons.edit_outlined, color: Colors.white24, size: 16),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(
+                Icons.edit_outlined,
+                color: onEdit == null ? Colors.white12 : Colors.white24,
+                size: 16,
+              ),
             ),
           ),
           const SizedBox(width: 4),
           GestureDetector(
             onTap: onDelete,
-            child: const Padding(
-              padding: EdgeInsets.all(4),
-              child: Icon(Icons.delete_outline, color: Colors.white24, size: 16),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(
+                Icons.delete_outline,
+                color: onDelete == null ? Colors.white12 : Colors.white24,
+                size: 16,
+              ),
             ),
           ),
         ],

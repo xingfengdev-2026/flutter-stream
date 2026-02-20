@@ -34,6 +34,7 @@ class LiveStreamProvider extends ChangeNotifier {
   bool _controllerBusy = false;
   bool _pendingReconnect = false;
   bool _selfStopping = false;
+  Future<void>? _pendingSettingsTask;
 
   /// Generation counter: incremented on every force-reconnect / stop.
   /// Any in-flight attemptConnect with a stale generation bails out
@@ -64,6 +65,9 @@ class LiveStreamProvider extends ChangeNotifier {
 
   bool _isVideoEnabled = true;
   bool get isVideoEnabled => _isVideoEnabled;
+
+  bool _isLocked = false;
+  bool get isLocked => _isLocked;
 
   /// List of back cameras: [{id, label}, ...]
   List<Map<String, String>> _backCameras = [];
@@ -173,16 +177,19 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   Future<void> addServer(ServerConfig server) async {
+    if (_isLocked) return;
     await _serverService.addServer(server);
     await _loadServers();
   }
 
   Future<void> updateServer(int index, ServerConfig server) async {
+    if (_isLocked) return;
     await _serverService.updateServer(index, server);
     await _loadServers();
   }
 
   Future<void> removeServer(int index) async {
+    if (_isLocked) return;
     await _serverService.removeServer(index);
     await _loadServers();
   }
@@ -192,7 +199,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _recreationPending = false;
     notifyListeners();
     // Sync pending settings (e.g. mute set before streaming) to the new controller.
-    _applyPendingSettings();
+    _pendingSettingsTask = _applyPendingSettings();
   }
 
   /// Push all user-chosen settings to the current native controller.
@@ -200,6 +207,15 @@ class LiveStreamProvider extends ChangeNotifier {
   /// pre-set values (mute, video config) are not lost.
   Future<void> _applyPendingSettings() async {
     if (_controller == null) return;
+    // Apply camera first so pre-live front/back selection survives controller recreation.
+    try {
+      await _controller!.setCameraPosition(
+        _isFrontCamera ? CameraPosition.front : CameraPosition.back,
+      );
+      if (!_isFrontCamera && _selectedCameraId != null) {
+        await _controller!.setCameraById(_selectedCameraId!);
+      }
+    } catch (_) {}
     try {
       await _controller!.setIsMuted(_isMuted);
     } catch (_) {}
@@ -214,8 +230,17 @@ class LiveStreamProvider extends ChangeNotifier {
     loadZoomRange();
   }
 
+  Future<void> _waitPendingSettings() async {
+    final task = _pendingSettingsTask;
+    if (task == null) return;
+    try {
+      await task;
+    } catch (_) {}
+  }
+
   void clearController() {
     _controller = null;
+    _pendingSettingsTask = null;
     notifyListeners();
   }
 
@@ -299,7 +324,7 @@ class LiveStreamProvider extends ChangeNotifier {
 
   VideoConfig buildVideoConfig() {
     final res = mapResolution(_resolution);
-    final fps = _isNativeFps ? 30 : _customFps;
+    final fps = _isNativeFps ? 30 : _customFps.clamp(1, 30).toInt();
     return VideoConfig.withDefaultBitrate(resolution: res, fps: fps);
   }
 
@@ -366,21 +391,30 @@ class LiveStreamProvider extends ChangeNotifier {
     });
   }
 
+  void toggleLock() {
+    _isLocked = !_isLocked;
+    notifyListeners();
+  }
+
   void setResolution(String res) {
+    if (_isLocked) return;
     _resolution = res;
     notifyListeners();
     _debouncedApplyVideoConfig();
   }
 
   void setFpsNative() {
+    if (_isLocked) return;
     _isNativeFps = true;
     notifyListeners();
     _debouncedApplyVideoConfig();
   }
 
   void setFpsCustom(int f) {
+    if (_isLocked) return;
     _isNativeFps = false;
-    _customFps = f;
+    // 60 fps is intentionally disabled due to connection instability.
+    _customFps = f.clamp(1, 30).toInt();
     notifyListeners();
     _debouncedApplyVideoConfig();
   }
@@ -527,6 +561,11 @@ class LiveStreamProvider extends ChangeNotifier {
       _scheduleRetry(server);
       return;
     }
+
+    // Ensure controller recreation has applied pending camera/mute states
+    // before opening stream.
+    await _waitPendingSettings();
+    if (userStopped || _generation != myGen || _controller == null) return;
 
     // TCP probe
     final reachable = await _probeServer(server.url);
@@ -711,6 +750,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _stopWatchdog();
 
     _recreationPending = false;
+    _pendingSettingsTask = null;
     if (_controller != null) {
       try {
         await _controller!.stopStreaming().timeout(const Duration(seconds: 2));
@@ -732,6 +772,7 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   Future<void> setCameraPosition(bool front) async {
+    if (_isLocked) return;
     if (_controller == null) return;
     try {
       await _controller!.setCameraPosition(
@@ -757,6 +798,7 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   Future<void> toggleMute() async {
+    if (_isLocked) return;
     if (_controller == null) return;
     _isMuted = !_isMuted;
     notifyListeners();
@@ -769,6 +811,7 @@ class LiveStreamProvider extends ChangeNotifier {
   // ─── Video (camera) on/off ─────────────────────────────
 
   Future<void> toggleVideo() async {
+    if (_isLocked) return;
     final next = !_isVideoEnabled;
     _isVideoEnabled = next;
     notifyListeners();
@@ -805,6 +848,7 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   Future<void> selectCamera(String cameraId) async {
+    if (_isLocked) return;
     if (_controller == null) return;
     try {
       await _controller!.setCameraById(cameraId);
@@ -852,6 +896,7 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   Future<void> setZoom(double zoom) async {
+    if (_isLocked) return;
     if (_controller == null) return;
     final clamped = zoom.clamp(_minZoom, _maxZoom);
     _currentZoom = clamped;
@@ -953,6 +998,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _stopWatchdog();
     _networkDebounce?.cancel();
     _connectivitySub?.cancel();
+    _pendingSettingsTask = null;
     _controller?.dispose();
     WakelockPlus.disable();
     ForegroundService.stop();
