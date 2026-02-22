@@ -6,7 +6,6 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
-import android.os.Build
 import android.util.Log
 import android.util.Size
 import android.view.Surface
@@ -24,8 +23,6 @@ import io.github.thibaultbee.streampack.utils.isBackCamera
 import io.github.thibaultbee.streampack.utils.isExternalCamera
 import io.github.thibaultbee.streampack.utils.isFrontCamera
 import kotlinx.coroutines.runBlocking
-import java.util.Locale
-import kotlin.math.abs
 
 class FlutterLiveStreamView(
     private val context: Context,
@@ -459,234 +456,6 @@ class FlutterLiveStreamView(
         method.invoke(controller, key, value)
     }
 
-    // ─── Camera list with labels ──────────────────────────────────
-
-    fun getCameraList(position: String): List<Map<String, String>> {
-        val facingValue = when (position) {
-            "front" -> CameraCharacteristics.LENS_FACING_FRONT
-            "back" -> CameraCharacteristics.LENS_FACING_BACK
-            "other" -> CameraCharacteristics.LENS_FACING_EXTERNAL
-            else -> throw IllegalArgumentException("Invalid camera position: $position")
-        }
-
-        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val allIds = cameraManager.cameraIdList
-        Log.d(TAG, "getCameraList($position): all camera IDs = ${allIds.toList()}")
-
-        val cameras = mutableListOf<Map<String, String>>()
-
-        for (cameraId in allIds) {
-            val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-
-            val facing = characteristics.get(CameraCharacteristics.LENS_FACING) ?: continue
-            if (facing != facingValue) continue
-
-            val capabilities = characteristics.get(
-                CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES
-            ) ?: intArrayOf()
-
-            // Only skip cameras that are exclusively depth/ToF sensors
-            val isDepthOnly = capabilities.isNotEmpty() &&
-                    capabilities.all {
-                        it == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT
-                    }
-            if (isDepthOnly) {
-                Log.d(TAG, "  Camera $cameraId: depth-only sensor — skip")
-                continue
-            }
-
-            val focalLength = firstFocalLength(characteristics)
-
-            var physicalIds: Set<String> = emptySet()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                physicalIds = characteristics.physicalCameraIds
-            }
-
-            Log.d(TAG, "  Camera $cameraId: facing=$facing, " +
-                    "focal=${focalLength ?: -1f}, capabilities=${capabilities.toList()}, " +
-                    "physicalCameras=$physicalIds")
-
-            val label = buildCameraLabel(cameraId, focalLength)
-            cameras.add(mapOf("id" to cameraId, "label" to label))
-        }
-
-        // If only one logical back camera is openable, synthesize selectable
-        // lens entries from physical sub-cameras using real focal lengths.
-        if (position == "back" && cameras.size <= 1) {
-            val logicalId = cameras.firstOrNull()?.get("id")
-            if (logicalId != null) {
-                val virtualLenses = buildVirtualBackLenses(cameraManager, logicalId)
-                if (virtualLenses.size > 1) {
-                    Log.d(TAG, "Using virtual back lenses: $virtualLenses")
-                    return virtualLenses.sortedBy { entry ->
-                        val id = entry["id"] ?: return@sortedBy Float.MAX_VALUE
-                        parseVirtualLensId(id)?.second ?: Float.MAX_VALUE
-                    }
-                }
-            }
-        }
-
-        Log.d(TAG, "getCameraList($position) result: $cameras")
-
-        return cameras.sortedBy { entry ->
-            val cid = entry["id"] ?: return@sortedBy Float.MAX_VALUE
-            try {
-                val chars = cameraManager.getCameraCharacteristics(cid)
-                firstFocalLength(chars) ?: Float.MAX_VALUE
-            } catch (_: Exception) {
-                Float.MAX_VALUE
-            }
-        }
-    }
-
-    private fun firstFocalLength(characteristics: CameraCharacteristics): Float? {
-        val focal = characteristics.get(
-            CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS
-        ) ?: return null
-        return focal.firstOrNull()
-    }
-
-    private fun buildVirtualBackLenses(
-        cameraManager: CameraManager,
-        logicalId: String
-    ): List<Map<String, String>> {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return emptyList()
-
-        return try {
-            val logicalChars = cameraManager.getCameraCharacteristics(logicalId)
-            val physicalIds = logicalChars.physicalCameraIds
-            if (physicalIds.size <= 1) return emptyList()
-
-            val physicalLenses = mutableListOf<Triple<String, Float, String>>()
-            for (pid in physicalIds) {
-                try {
-                    val pChars = cameraManager.getCameraCharacteristics(pid)
-                    val pCaps = pChars.get(
-                        CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES
-                    ) ?: intArrayOf()
-                    val pIsDepthOnly = pCaps.isNotEmpty() && pCaps.all {
-                        it == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT
-                    }
-                    if (pIsDepthOnly) continue
-
-                    val pFocal = firstFocalLength(pChars) ?: continue
-                    val pLabel = buildCameraLabel(pid, pFocal)
-                    physicalLenses.add(Triple(pid, pFocal, pLabel))
-                } catch (e: Exception) {
-                    Log.w(TAG, "  Physical $pid unavailable: ${e.message}")
-                }
-            }
-
-            if (physicalLenses.size <= 1) return emptyList()
-
-            val logicalFocal = firstFocalLength(logicalChars)
-            val referenceFocal = logicalFocal
-                ?: physicalLenses.minByOrNull { abs(it.second - 4.5f) }?.second
-                ?: physicalLenses.first().second
-
-            val minZoom = try {
-                getMinZoom().toFloat()
-            } catch (_: Exception) {
-                1.0f
-            }
-            val maxZoom = try {
-                getMaxZoom().toFloat()
-            } catch (_: Exception) {
-                10.0f
-            }
-
-            val unique = LinkedHashMap<String, Map<String, String>>()
-            for ((_, focal, label) in physicalLenses.sortedBy { it.second }) {
-                var zoomRatio = focal / referenceFocal
-                if (!zoomRatio.isFinite() || zoomRatio <= 0f) {
-                    zoomRatio = 1.0f
-                }
-                zoomRatio = zoomRatio.coerceIn(minZoom, maxZoom)
-
-                val ratioId = String.format(Locale.US, "%.3f", zoomRatio)
-                val ratioLabel = formatZoomLabel(zoomRatio)
-                val id = "$VIRTUAL_LENS_PREFIX$logicalId:$ratioId"
-                val display = "$label ($ratioLabel)"
-                unique[id] = mapOf("id" to id, "label" to display)
-            }
-            unique.values.toList()
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to build virtual back lenses: ${e.message}")
-            emptyList()
-        }
-    }
-
-    private fun buildCameraLabel(
-        cameraId: String,
-        focalLength: Float?
-    ): String {
-        if (focalLength == null) return "Camera $cameraId"
-        val fl = focalLength
-        val label = when {
-            fl < 3.0f -> "Ultra Wide"
-            fl < 6.0f -> "Wide"
-            fl < 10.0f -> "Telephoto"
-            else -> "Super Telephoto"
-        }
-        return "$label (${String.format(Locale.US, "%.1f", fl)}mm)"
-    }
-
-    private fun formatZoomLabel(zoomRatio: Float): String {
-        val text = String.format(Locale.US, "%.2f", zoomRatio)
-            .trimEnd('0')
-            .trimEnd('.')
-        return "${text}x"
-    }
-
-    private fun parseVirtualLensId(cameraId: String): Pair<String, Float>? {
-        if (!cameraId.startsWith(VIRTUAL_LENS_PREFIX)) return null
-        val payload = cameraId.removePrefix(VIRTUAL_LENS_PREFIX)
-        val sep = payload.lastIndexOf(':')
-        if (sep <= 0 || sep >= payload.length - 1) return null
-        val logicalId = payload.substring(0, sep)
-        val zoomRatio = payload.substring(sep + 1).toFloatOrNull() ?: return null
-        return logicalId to zoomRatio
-    }
-
-    fun setCameraById(cameraId: String, onSuccess: () -> Unit, onError: (Exception) -> Unit) {
-        permissionsManager.requestPermission(
-            Manifest.permission.CAMERA,
-            onGranted = {
-                try {
-                    val wasMuted = !_isVideoEnabled && _isStreaming
-                    if (wasMuted) {
-                        clearVideoMuteState()
-                    }
-
-                    val virtualLens = parseVirtualLensId(cameraId)
-                    if (virtualLens != null) {
-                        val (logicalId, zoomRatio) = virtualLens
-                        if (streamer.camera != logicalId) {
-                            streamer.camera = logicalId
-                        }
-                        setZoom(zoomRatio.toDouble())
-                    } else {
-                        streamer.camera = cameraId
-                    }
-
-                    if (wasMuted) {
-                        // Re-apply black screen mode for the newly selected camera.
-                        applyBlackScreen()
-                    }
-
-                    onSuccess()
-                } catch (e: Exception) {
-                    onError(e)
-                }
-            },
-            onShowPermissionRationale = { _ ->
-                onError(SecurityException("Missing permission Manifest.permission.CAMERA"))
-            },
-            onDenied = {
-                onError(SecurityException("Missing permission Manifest.permission.CAMERA"))
-            })
-    }
-
     // ─── Zoom ──────────────────────────────────────────────────────
 
     fun setZoom(zoomRatio: Double) {
@@ -735,6 +504,5 @@ class FlutterLiveStreamView(
 
     companion object {
         private const val TAG = "FlutterLiveStreamView"
-        private const val VIRTUAL_LENS_PREFIX = "virtual:"
     }
 }

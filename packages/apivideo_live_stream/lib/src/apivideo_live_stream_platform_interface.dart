@@ -91,14 +91,6 @@ abstract class ApiVideoLiveStreamPlatform extends PlatformInterface {
     throw UnimplementedError('getVideoEnabled() has not been implemented.');
   }
 
-  Future<List<Map<String, String>>> getCameraList(String position) {
-    throw UnimplementedError('getCameraList() has not been implemented.');
-  }
-
-  Future<void> setCameraById(String cameraId) {
-    throw UnimplementedError('setCameraById() has not been implemented.');
-  }
-
   Future<void> setZoom(double zoomRatio) {
     throw UnimplementedError('setZoom() has not been implemented.');
   }

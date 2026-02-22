@@ -36,25 +36,16 @@ class LiveStreamProvider extends ChangeNotifier {
   bool _selfStopping = false;
   Future<void>? _pendingSettingsTask;
 
-  /// Generation counter: incremented on every force-reconnect / stop.
-  /// Any in-flight attemptConnect with a stale generation bails out
-  /// without touching shared state, preventing race conditions.
   int _generation = 0;
 
   Timer? _watchdogTimer;
 
-  /// True while live_screen is recreating the native controller.
-  /// Watchdog must NOT fire during this period — the controller is
-  /// intentionally null and no timers are running.
   bool _recreationPending = false;
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
   List<ConnectivityResult> _lastConnectivity = [];
   Timer? _networkDebounce;
 
-  /// Timestamp until which disconnect callbacks are suppressed.
-  /// Set when resuming from background while stream is alive — the Flutter
-  /// texture lifecycle may fire spurious native disconnect callbacks.
   DateTime _resumeGraceUntil = DateTime(0);
 
   bool _isMuted = false;
@@ -68,13 +59,6 @@ class LiveStreamProvider extends ChangeNotifier {
 
   bool _isLocked = false;
   bool get isLocked => _isLocked;
-
-  /// List of back cameras: [{id, label}, ...]
-  List<Map<String, String>> _backCameras = [];
-  List<Map<String, String>> get backCameras => _backCameras;
-
-  String? _selectedCameraId;
-  String? get selectedCameraId => _selectedCameraId;
 
   double _currentZoom = 1.0;
   double get currentZoom => _currentZoom;
@@ -108,8 +92,6 @@ class LiveStreamProvider extends ChangeNotifier {
     _initConnectivityListener();
   }
 
-  // ─── Network change detection ─────────────────────────
-
   void _initConnectivityListener() {
     _connectivitySub = Connectivity().onConnectivityChanged.listen((result) {
       final changed = _lastConnectivity.toString() != result.toString();
@@ -129,11 +111,9 @@ class LiveStreamProvider extends ChangeNotifier {
             r == ConnectivityResult.ethernet);
 
         if (hasNetwork) {
-          // Debounce: wait for network to stabilize before acting.
           _networkDebounce?.cancel();
           _networkDebounce = Timer(const Duration(milliseconds: 800), () {
             if (userStopped || _activeServer == null) return;
-            // If still streaming fine, don't disrupt.
             if (_status == StreamStatus.streaming) {
               debugPrint('[OnAir] Network changed but stream still alive — skipping reconnect');
               return;
@@ -146,16 +126,11 @@ class LiveStreamProvider extends ChangeNotifier {
     });
   }
 
-  /// Nuclear reconnect: invalidate all in-flight operations, recreate controller.
   void _forceReconnect() {
-    // Bump generation — any running attemptConnect becomes stale and will
-    // bail out without touching _controllerBusy or any other state.
     _generation++;
     _reconnectTimer?.cancel();
     _retryTimer?.cancel();
     _reconnectAttempt = 0;
-    // Force-reset mutex — the old controller is about to be destroyed,
-    // so whatever was "busy" on it is now irrelevant.
     _controllerBusy = false;
     _selfStopping = false;
     _pendingReconnect = false;
@@ -198,35 +173,24 @@ class LiveStreamProvider extends ChangeNotifier {
     _controller = controller;
     _recreationPending = false;
     notifyListeners();
-    // Sync pending settings (e.g. mute set before streaming) to the new controller.
     _pendingSettingsTask = _applyPendingSettings();
   }
 
-  /// Push all user-chosen settings to the current native controller.
-  /// Called after every controller creation / recreation so that
-  /// pre-set values (mute, video config) are not lost.
   Future<void> _applyPendingSettings() async {
     if (_controller == null) return;
-    // Apply camera first so pre-live front/back selection survives controller recreation.
     try {
       await _controller!.setCameraPosition(
         _isFrontCamera ? CameraPosition.front : CameraPosition.back,
       );
-      if (!_isFrontCamera && _selectedCameraId != null) {
-        await _controller!.setCameraById(_selectedCameraId!);
-      }
     } catch (_) {}
     try {
       await _controller!.setIsMuted(_isMuted);
     } catch (_) {}
-    // Sync video enabled state to native (important for stream start)
     if (!_isVideoEnabled) {
       try {
         await _controller!.setVideoEnabled(false);
       } catch (_) {}
     }
-    // Load back cameras and max zoom after controller is ready
-    loadBackCameras();
     loadZoomRange();
   }
 
@@ -244,9 +208,6 @@ class LiveStreamProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Suppress disconnect callbacks for 3 seconds after returning to foreground.
-  /// The Flutter TextureView lifecycle can fire spurious native callbacks
-  /// when the surface is destroyed / recreated by the framework.
   void armResumeGrace() {
     _resumeGraceUntil = DateTime.now().add(const Duration(seconds: 3));
     debugPrint('[OnAir] Resume grace armed for 3s');
@@ -254,8 +215,6 @@ class LiveStreamProvider extends ChangeNotifier {
 
   bool get _inResumeGrace => DateTime.now().isBefore(_resumeGraceUntil);
 
-  /// Called when app resumes from screen-off while we were live.
-  /// Resets state so the new controller can reconnect cleanly.
   void notifyResumeFromBackground() {
     _generation++;
     _controllerBusy = false;
@@ -270,8 +229,6 @@ class LiveStreamProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Start streaming with a guaranteed fresh controller.
-  /// Requests controller recreation first, then connects.
   Future<void> startStreamingWithFreshController(ServerConfig server) async {
     _generation++;
     _activeServer = server;
@@ -288,18 +245,13 @@ class LiveStreamProvider extends ChangeNotifier {
     WakelockPlus.enable();
     _startWatchdog();
 
-    // Request live_screen to recreate controller.
-    // It will call initController + attemptConnect when done.
     if (onControllerNeedsRecreate != null) {
       _recreationPending = true;
       onControllerNeedsRecreate!();
     } else {
-      // Fallback: use existing controller
       await attemptConnect(server);
     }
   }
-
-  // ─── Settings ──────────────────────────────────────────
 
   Resolution mapResolution(String res) {
     switch (res) {
@@ -328,9 +280,6 @@ class LiveStreamProvider extends ChangeNotifier {
     return VideoConfig.withDefaultBitrate(resolution: res, fps: fps);
   }
 
-  /// Apply video config. During idle: just setVideoConfig.
-  /// During streaming: stop → reconfigure → restart (encoder needs reset for
-  /// resolution/fps changes; bitrate may also need this on some devices).
   Future<void> _applyVideoConfig() async {
     if (_controller == null) return;
 
@@ -353,7 +302,6 @@ class LiveStreamProvider extends ChangeNotifier {
         debugPrint('[OnAir] setVideoConfig error: $e');
       }
 
-      // Brief pause for encoder to reconfigure
       await Future.delayed(const Duration(milliseconds: 200));
 
       if (_status != StreamStatus.streaming || _controller == null || userStopped) return;
@@ -366,11 +314,9 @@ class LiveStreamProvider extends ChangeNotifier {
         debugPrint('[OnAir] Stream restarted with new config (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})');
       } catch (e) {
         debugPrint('[OnAir] Restart stream error: $e');
-        // Trigger reconnect to recover
         _scheduleReconnect();
       }
     } else {
-      // Not streaming — just apply config for next stream
       try {
         await _controller!.setVideoConfig(buildVideoConfig());
         debugPrint('[OnAir] VideoConfig applied (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})');
@@ -380,8 +326,6 @@ class LiveStreamProvider extends ChangeNotifier {
     }
   }
 
-  /// Debounce timer for config changes — avoids rapid stop/restart
-  /// when user taps settings quickly.
   Timer? _configDebounce;
 
   void _debouncedApplyVideoConfig() {
@@ -413,28 +357,11 @@ class LiveStreamProvider extends ChangeNotifier {
   void setFpsCustom(int f) {
     if (_isLocked) return;
     _isNativeFps = false;
-    // 60 fps is intentionally disabled due to connection instability.
     _customFps = f.clamp(1, 30).toInt();
     notifyListeners();
     _debouncedApplyVideoConfig();
   }
 
-  // ─── URL / StreamKey splitting ─────────────────────────
-
-  /// Split a raw URL + stream key into the (url, key) pair that the native
-  /// library expects.  The native library constructs the final RTMP URL as
-  /// `url + "/" + key`, so the URL must contain the app path.
-  ///
-  /// When the URL has NO path and a key is provided, the key is treated as
-  /// the path (app name + optional stream key separated by `/`).
-  ///
-  /// Examples:
-  ///   ("rtmp://host/live", "abc")       → ("rtmp://host/live", "abc")
-  ///   ("rtmp://host/live/abc", "")      → ("rtmp://host/live", "abc")
-  ///   ("rtmp://host", "live/abc")       → ("rtmp://host/live", "abc")
-  ///   ("rtmp://host", "live")           → ("rtmp://host/live", "stream")
-  ///   ("rtmp://host", "")               → ("rtmp://host", "stream")
-  ///   ("rtmp://host/app", "")           → ("rtmp://host", "app")
   static (String url, String key) splitUrlKey(String rawUrl, String rawKey) {
     final key = rawKey.trim();
     var url = rawUrl.trim();
@@ -449,13 +376,10 @@ class LiveStreamProvider extends ChangeNotifier {
     final afterScheme = url.substring(schemeEnd + 3);
     final firstSlash = afterScheme.indexOf('/');
 
-    // URL has NO path (e.g. rtmp://192.168.1.23)
     if (firstSlash < 0) {
       if (key.isEmpty) {
         return (url, 'stream');
       }
-      // Treat key as path: "live/abc" → url="rtmp://host/live", key="abc"
-      //                     "live"     → url="rtmp://host/live", key="stream"
       final keySlash = key.lastIndexOf('/');
       if (keySlash >= 0) {
         final path = key.substring(0, keySlash);
@@ -466,28 +390,21 @@ class LiveStreamProvider extends ChangeNotifier {
       }
     }
 
-    // URL HAS a path
     if (key.isNotEmpty) {
-      // User provided both URL-with-path and key → pass as-is
       return (url, key);
     }
 
-    // Key is empty → extract from URL path
     final pathPart = afterScheme.substring(firstSlash + 1);
     final lastSlash = pathPart.lastIndexOf('/');
 
     if (lastSlash < 0) {
-      // Only one path segment (e.g. rtmp://host/live) → that's the app, use default key
       return (url, 'stream');
     }
 
-    // Multiple path segments → last segment is the key
     final extractedKey = pathPart.substring(lastSlash + 1);
     final base = url.substring(0, url.length - extractedKey.length - 1);
     return (base, extractedKey);
   }
-
-  // ─── TCP probe ──────────────────────────────────────────
 
   Future<bool> _probeServer(String url) async {
     try {
@@ -526,8 +443,6 @@ class LiveStreamProvider extends ChangeNotifier {
     }
   }
 
-  // ─── Start streaming ──────────────────────────────────
-
   Future<void> startStreaming(ServerConfig server) async {
     if (_controller == null || _controllerBusy) return;
 
@@ -547,13 +462,9 @@ class LiveStreamProvider extends ChangeNotifier {
     await attemptConnect(server);
   }
 
-  // ─── Core connect logic ─────────────────────────────────
-
   Future<void> attemptConnect(ServerConfig server) async {
     if (userStopped) return;
 
-    // Capture generation at start — if it changes during this call,
-    // a force-reconnect happened and we must bail out silently.
     final myGen = _generation;
 
     if (_controller == null || _controllerBusy) {
@@ -562,12 +473,9 @@ class LiveStreamProvider extends ChangeNotifier {
       return;
     }
 
-    // Ensure controller recreation has applied pending camera/mute states
-    // before opening stream.
     await _waitPendingSettings();
     if (userStopped || _generation != myGen || _controller == null) return;
 
-    // TCP probe
     final reachable = await _probeServer(server.url);
     if (userStopped || _generation != myGen) return;
 
@@ -577,7 +485,6 @@ class LiveStreamProvider extends ChangeNotifier {
       return;
     }
 
-    // Split URL and stream key
     final (effectiveUrl, effectiveKey) = splitUrlKey(server.url, server.streamKey);
     debugPrint('[OnAir] Connecting to url=$effectiveUrl key=$effectiveKey');
 
@@ -585,27 +492,23 @@ class LiveStreamProvider extends ChangeNotifier {
     _pendingReconnect = false;
 
     try {
-      // Clean-stop previous session (timeout prevents hang on dead TCP)
       _selfStopping = true;
       try {
         await _controller!.stopStreaming().timeout(const Duration(seconds: 2));
       } catch (_) {}
 
-      // If generation changed while we were awaiting, bail out.
       if (_generation != myGen) return;
       _selfStopping = false;
       _pendingReconnect = false;
 
       if (userStopped) return;
 
-      // Ensure preview is running (timeout prevents hang)
       try {
         await _controller!.startPreview().timeout(const Duration(seconds: 3));
       } catch (_) {}
 
       if (userStopped || _generation != myGen) return;
 
-      // Connect (timeout prevents hang on dead server)
       try {
         await _controller!.startStreaming(
           streamKey: effectiveKey,
@@ -622,14 +525,12 @@ class LiveStreamProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('[OnAir] attemptConnect unexpected error: $e');
     } finally {
-      // Only reset state if WE still own it (same generation).
       if (_generation == myGen) {
         _controllerBusy = false;
         _selfStopping = false;
       }
     }
 
-    // Post-checks — only if still our generation
     if (userStopped || _generation != myGen) return;
 
     if (_pendingReconnect ||
@@ -658,8 +559,6 @@ class LiveStreamProvider extends ChangeNotifier {
     }
     notifyListeners();
   }
-
-  // ─── Reconnect ─────────────────────────────────────────
 
   void _scheduleReconnect() {
     if (userStopped) return;
@@ -694,8 +593,6 @@ class LiveStreamProvider extends ChangeNotifier {
     });
   }
 
-  // ─── Watchdog ──────────────────────────────────────────
-
   void _startWatchdog() {
     _watchdogTimer?.cancel();
     _watchdogTimer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -713,8 +610,6 @@ class LiveStreamProvider extends ChangeNotifier {
         return;
       }
 
-      // Skip if controller is being recreated — it's intentionally
-      // null and no timers run during recreation.
       if (_recreationPending) return;
 
       if (!_controllerBusy &&
@@ -733,8 +628,6 @@ class LiveStreamProvider extends ChangeNotifier {
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
   }
-
-  // ─── Stop streaming ───────────────────────────────────
 
   Future<void> stopStreaming() async {
     userStopped = true;
@@ -765,8 +658,6 @@ class LiveStreamProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── Camera / Mic controls ──────────────────────────────
-
   Future<void> toggleCamera() async {
     await setCameraPosition(!_isFrontCamera);
   }
@@ -778,18 +669,6 @@ class LiveStreamProvider extends ChangeNotifier {
       await _controller!.setCameraPosition(
           front ? CameraPosition.front : CameraPosition.back);
       _isFrontCamera = front;
-      if (front) {
-        _selectedCameraId = null;
-      } else {
-        await loadBackCameras();
-        if (_selectedCameraId != null) {
-          try {
-            await _controller!.setCameraById(_selectedCameraId!);
-          } catch (e) {
-            debugPrint('[OnAir] Failed to restore selected back camera: $e');
-          }
-        }
-      }
       await loadZoomRange();
       notifyListeners();
     } catch (e) {
@@ -808,8 +687,6 @@ class LiveStreamProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
-  // ─── Video (camera) on/off ─────────────────────────────
-
   Future<void> toggleVideo() async {
     if (_isLocked) return;
     final next = !_isVideoEnabled;
@@ -824,56 +701,6 @@ class LiveStreamProvider extends ChangeNotifier {
       }
     }
   }
-
-  // ─── Multi-camera ──────────────────────────────────────
-
-  Future<void> loadBackCameras() async {
-    if (_controller == null) return;
-    try {
-      _backCameras = await _controller!.getCameraList('back');
-      if (_backCameras.isEmpty) {
-        _selectedCameraId = null;
-      } else {
-        final hasSelected = _selectedCameraId != null &&
-            _backCameras.any((c) => c['id'] == _selectedCameraId);
-        _selectedCameraId = hasSelected
-            ? _selectedCameraId
-            : _backCameras.first['id'];
-      }
-      debugPrint('[OnAir] Back cameras: $_backCameras');
-      notifyListeners();
-    } catch (e) {
-      debugPrint('[OnAir] Failed to load back cameras: $e');
-    }
-  }
-
-  Future<void> selectCamera(String cameraId) async {
-    if (_isLocked) return;
-    if (_controller == null) return;
-    try {
-      await _controller!.setCameraById(cameraId);
-      _selectedCameraId = cameraId;
-      final virtualZoom = _extractVirtualLensZoom(cameraId);
-      if (virtualZoom != null) {
-        _currentZoom = virtualZoom;
-      }
-      notifyListeners();
-      // Reload zoom range after camera/lens change.
-      await loadZoomRange();
-      debugPrint('[OnAir] Camera selected: $cameraId');
-    } catch (e) {
-      debugPrint('[OnAir] Failed to select camera: $e');
-    }
-  }
-
-  double? _extractVirtualLensZoom(String cameraId) {
-    if (!cameraId.startsWith('virtual:')) return null;
-    final idx = cameraId.lastIndexOf(':');
-    if (idx < 0 || idx >= cameraId.length - 1) return null;
-    return double.tryParse(cameraId.substring(idx + 1));
-  }
-
-  // ─── Zoom ──────────────────────────────────────────────
 
   Future<void> loadZoomRange() async {
     if (_controller == null) return;
@@ -907,8 +734,6 @@ class LiveStreamProvider extends ChangeNotifier {
       debugPrint('[OnAir] Failed to set zoom: $e');
     }
   }
-
-  // ─── Native callbacks ─────────────────────────────────
 
   void onConnectionSuccess() {
     debugPrint('[OnAir] onConnectionSuccess');
@@ -963,8 +788,6 @@ class LiveStreamProvider extends ChangeNotifier {
 
     _scheduleReconnect();
   }
-
-  // ─── Timer ──────────────────────────────────────────────
 
   void _startTimer() {
     _timer?.cancel();

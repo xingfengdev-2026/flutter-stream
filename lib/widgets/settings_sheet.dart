@@ -49,7 +49,6 @@ class SettingsSheet extends StatelessWidget {
                 ),
                 const SizedBox(height: 24),
 
-                // Camera
                 _sectionTitle('Camera'),
                 const SizedBox(height: 8),
                 Row(
@@ -69,23 +68,8 @@ class SettingsSheet extends StatelessWidget {
                     ),
                   ],
                 ),
-                // Back camera lens picker
-                if (!p.isFrontCamera && p.backCameras.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  _sectionTitle('Lens'),
-                  const SizedBox(height: 8),
-                  _LensChipRow(
-                    cameras: p.backCameras,
-                    selectedId:
-                        p.selectedCameraId ?? (p.backCameras.first['id'] ?? ''),
-                    onSelected: p.isLocked
-                        ? null
-                        : (cameraId) => p.selectCamera(cameraId),
-                  ),
-                ],
                 const SizedBox(height: 22),
 
-                // Zoom slider
                 if (p.maxZoom > 1.0 || p.minZoom < 1.0) ...[
                   _sectionTitle('Zoom (${p.currentZoom.toStringAsFixed(1)}x)'),
                   const SizedBox(height: 4),
@@ -108,7 +92,6 @@ class SettingsSheet extends StatelessWidget {
                   const SizedBox(height: 14),
                 ],
 
-                // Resolution
                 _sectionTitle('Resolution'),
                 const SizedBox(height: 8),
                 _ChipRow(
@@ -127,7 +110,6 @@ class SettingsSheet extends StatelessWidget {
                 ),
                 const SizedBox(height: 22),
 
-                // FPS
                 _sectionTitle('Frame Rate'),
                 const SizedBox(height: 8),
                 _ChipRow(
@@ -143,7 +125,6 @@ class SettingsSheet extends StatelessWidget {
                 ),
                 const SizedBox(height: 22),
 
-                // Stream Servers
                 Row(
                   children: [
                     _sectionTitle('Stream Servers'),
@@ -305,8 +286,6 @@ class SettingsSheet extends StatelessWidget {
   }
 }
 
-// ─── Camera Option ───────────────────────────────────────
-
 class _CameraOption extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -360,8 +339,6 @@ class _CameraOption extends StatelessWidget {
     );
   }
 }
-
-// ─── Server Row ──────────────────────────────────────────
 
 class _ServerRow extends StatelessWidget {
   final ServerConfig server;
@@ -429,57 +406,6 @@ class _ServerRow extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _LensChipRow extends StatelessWidget {
-  final List<Map<String, String>> cameras;
-  final String selectedId;
-  final ValueChanged<String>? onSelected;
-
-  const _LensChipRow({
-    required this.cameras,
-    required this.selectedId,
-    this.onSelected,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: cameras.map((camera) {
-        final id = camera['id'] ?? '';
-        final label = camera['label'] ?? id;
-        final isSel = id == selectedId;
-        return GestureDetector(
-          onTap: (onSelected != null && id.isNotEmpty)
-              ? () => onSelected!(id)
-              : null,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              color: isSel
-                  ? const Color(0xFF6366F1)
-                  : Colors.white.withValues(alpha: 0.06),
-              border: isSel
-                  ? null
-                  : Border.all(color: Colors.white.withValues(alpha: 0.06)),
-            ),
-            child: Text(
-              label,
-              style: TextStyle(
-                color: isSel ? Colors.white : Colors.white54,
-                fontSize: 13,
-                fontWeight: isSel ? FontWeight.w600 : FontWeight.normal,
-              ),
-            ),
-          ),
-        );
-      }).toList(),
     );
   }
 }

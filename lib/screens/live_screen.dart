@@ -20,11 +20,8 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   bool _permissionsGranted = false;
   bool _isInitialized = false;
 
-  /// Guards concurrent _recreateController calls. Only the latest one proceeds.
   int _recreateGen = 0;
 
-  /// True if we were live/reconnecting when the screen locked.
-  /// Used to trigger controller recreation on resume.
   bool _wasLiveBeforePause = false;
 
   @override
@@ -55,7 +52,6 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
 
     if (state == AppLifecycleState.inactive) {
       if (isLive) _wasLiveBeforePause = true;
-      // Don't stop preview if live — camera must stay open for encoding.
       if (!isLive && _isInitialized) {
         _controller?.stopPreview();
       }
@@ -66,16 +62,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
         _wasLiveBeforePause = false;
 
         if (_provider.status == StreamStatus.streaming) {
-          // Stream survived background — DON'T touch the controller at all.
-          // Calling startPreview() would restart the camera pipeline and
-          // kill the RTMP connection. The preview texture will refresh
-          // automatically when Flutter re-renders the surface.
           debugPrint('[OnAir] Resumed — stream still alive, hands off');
-          // Arm grace period: ignore spurious native disconnect callbacks
-          // that may fire from the Flutter texture lifecycle change.
           _provider.armResumeGrace();
         } else {
-          // Stream died during background — recreate controller to recover.
           debugPrint('[OnAir] Resumed — stream died in background, recreating...');
           _provider.notifyResumeFromBackground();
           _recreateController();
@@ -124,36 +113,25 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     setState(() => _isInitialized = true);
   }
 
-  /// Builds a brand-new native controller, disposing the old one.
-  /// Uses a generation counter so rapid calls don't conflict:
-  /// only the latest call's result is kept.
-  /// Old controller callbacks are guarded — they can't fire into the new state.
   Future<void> _recreateController() async {
     _recreateGen++;
     final myGen = _recreateGen;
     debugPrint('[OnAir] Recreating controller (gen=$myGen)...');
 
-    // Grab and clear old controller
     final oldController = _controller;
     _controller = null;
     _isInitialized = false;
     _provider.clearController();
 
-    // Dispose old — don't await, it might hang on dead network
     if (oldController != null) {
       Future.microtask(() {
         try { oldController.dispose(); } catch (_) {}
       });
     }
 
-    // Wait for native resources to fully release.
     await Future.delayed(const Duration(milliseconds: 300));
-    if (_recreateGen != myGen || !mounted) return; // superseded
+    if (_recreateGen != myGen || !mounted) return;
 
-    // Create fresh controller.
-    // CRITICAL: callbacks are guarded by myGen — if this controller
-    // becomes stale (another recreation happens), its callbacks are
-    // silently ignored so they can't corrupt the new state.
     try {
       final ctrl = ApiVideoLiveStreamController(
         initialAudioConfig: AudioConfig(),
@@ -172,7 +150,6 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       );
       await ctrl.initialize();
 
-      // Check again after await — might have been superseded
       if (_recreateGen != myGen || !mounted) {
         Future.microtask(() {
           try { ctrl.dispose(); } catch (_) {}
@@ -186,14 +163,12 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
 
       debugPrint('[OnAir] Controller recreated successfully (gen=$myGen)');
 
-      // Resume reconnect with fresh controller
       if (_provider.activeServer != null && !_provider.userStopped) {
         _provider.attemptConnect(_provider.activeServer!);
       }
     } catch (e) {
       debugPrint('[OnAir] Controller recreation failed: $e');
       if (_recreateGen != myGen || !mounted) return;
-      // Retry after delay
       await Future.delayed(const Duration(seconds: 1));
       if (_recreateGen == myGen && mounted &&
           _provider.activeServer != null && !_provider.userStopped) {
@@ -217,8 +192,6 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       builder: (_) => ServerSheet(provider: _provider),
     );
     if (server != null && mounted) {
-      // Always recreate controller for a fresh start — prevents
-      // "corrupted controller" from requiring app restart.
       await _provider.startStreamingWithFreshController(server);
     }
   }
@@ -240,7 +213,6 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     );
   }
 
-  // ─── Pinch-to-zoom ──────────────────────────────────────
   double _baseZoom = 1.0;
 
   void _onScaleStart(ScaleStartDetails details) {
@@ -276,13 +248,11 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
                   color: Color(0xFF6366F1), strokeWidth: 2),
             ),
 
-          // Top
           Positioned(
             top: 0, left: 0, right: 0,
             child: RepaintBoundary(child: _TopBar()),
           ),
 
-          // Bottom
           Positioned(
             bottom: 0, left: 0, right: 0,
             child: RepaintBoundary(child: _BottomControls(
@@ -295,8 +265,6 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     );
   }
 }
-
-// ─── Top Bar ──────────────────────────────────────────────
 
 class _TopBar extends StatelessWidget {
   @override
@@ -368,8 +336,6 @@ class _TopBar extends StatelessWidget {
     );
   }
 }
-
-// ─── Bottom Controls ──────────────────────────────────────
 
 class _BottomControls extends StatelessWidget {
   final VoidCallback onRecord;
@@ -467,8 +433,6 @@ class _BottomControls extends StatelessWidget {
     );
   }
 }
-
-// ─── Widgets ──────────────────────────────────────────────
 
 class _StatusBanner extends StatelessWidget {
   final Color color;
@@ -642,7 +606,6 @@ class _PulsingDotState extends State<_PulsingDot>
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      // Slower pulse = less GPU work
       duration: const Duration(milliseconds: 2000),
     )..repeat(reverse: true);
   }
@@ -655,7 +618,6 @@ class _PulsingDotState extends State<_PulsingDot>
 
   @override
   Widget build(BuildContext context) {
-    // RepaintBoundary isolates this animation from the rest of the tree.
     return RepaintBoundary(
       child: FadeTransition(
         opacity: Tween(begin: 0.3, end: 1.0).animate(_ctrl),

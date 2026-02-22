@@ -203,17 +203,6 @@ class ApiVideoLiveStreamController {
     return _platform.getVideoEnabled();
   }
 
-  /// Gets the list of cameras for the given [position] ("back", "front", "other").
-  /// Returns a list of maps with "id" and "label" keys.
-  Future<List<Map<String, String>>> getCameraList(String position) {
-    return _platform.getCameraList(position);
-  }
-
-  /// Sets the camera by its ID (obtained from [getCameraList]).
-  Future<void> setCameraById(String cameraId) {
-    return _platform.setCameraById(cameraId);
-  }
-
   /// Sets the zoom ratio. 1.0 = no zoom.
   Future<void> setZoom(double zoomRatio) {
     return _platform.setZoom(zoomRatio);

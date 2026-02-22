@@ -107,21 +107,6 @@ class ApiVideoMobileLiveStreamPlatform extends ApiVideoLiveStreamPlatform {
   }
 
   @override
-  Future<List<Map<String, String>>> getCameraList(String position) async {
-    final List<dynamic> reply = await _channel.invokeMethod(
-        'getCameraList', <String, dynamic>{'position': position});
-    return reply
-        .map((e) => Map<String, String>.from(e as Map))
-        .toList();
-  }
-
-  @override
-  Future<void> setCameraById(String cameraId) {
-    return _channel
-        .invokeMethod('setCameraById', <String, dynamic>{'cameraId': cameraId});
-  }
-
-  @override
   Future<void> setZoom(double zoomRatio) {
     return _channel
         .invokeMethod('setZoom', <String, dynamic>{'zoomRatio': zoomRatio});

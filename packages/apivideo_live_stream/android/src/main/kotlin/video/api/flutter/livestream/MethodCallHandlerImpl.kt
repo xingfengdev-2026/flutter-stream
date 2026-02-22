@@ -256,36 +256,6 @@ class MethodCallHandlerImpl(
                 }
             }
 
-            "getCameraList" -> {
-                val position = try {
-                    ((call.arguments as Map<*, *>)["position"] as String)
-                } catch (e: Exception) {
-                    result.error("invalid_parameter", "Invalid position", e)
-                    return
-                }
-                try {
-                    result.success(flutterView!!.getCameraList(position))
-                } catch (e: Exception) {
-                    result.error("failed_to_get_camera_list", e.message, null)
-                }
-            }
-
-            "setCameraById" -> {
-                val cameraId = try {
-                    ((call.arguments as Map<*, *>)["cameraId"] as String)
-                } catch (e: Exception) {
-                    result.error("invalid_parameter", "Invalid cameraId", e)
-                    return
-                }
-                try {
-                    flutterView!!.setCameraById(cameraId,
-                        { result.success(null) },
-                        { result.error("failed_to_set_camera_by_id", it.message, null) })
-                } catch (e: Exception) {
-                    result.error("failed_to_set_camera_by_id", e.message, null)
-                }
-            }
-
             "setZoom" -> {
                 val zoomRatio = try {
                     ((call.arguments as Map<*, *>)["zoomRatio"] as Number).toDouble()
