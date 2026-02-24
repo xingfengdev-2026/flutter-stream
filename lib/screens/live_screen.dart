@@ -607,7 +607,7 @@ class _RecordButton extends StatelessWidget {
                 ? 'Stop'
                 : isConnecting
                 ? 'Connecting'
-                : 'Go Live',
+                : 'Go',
             style: TextStyle(
               color: isLive ? Colors.red.shade300 : Colors.white60,
               fontSize: 11,
