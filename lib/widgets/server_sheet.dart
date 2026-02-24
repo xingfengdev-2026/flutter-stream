@@ -37,6 +37,7 @@ class _ServerSheetState extends State<ServerSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewPadding.bottom;
+    final isLocked = _p.isLocked;
     return Container(
       constraints: BoxConstraints(
         maxHeight: MediaQuery.of(context).size.height * 0.7,
@@ -61,8 +62,11 @@ class _ServerSheetState extends State<ServerSheet> {
             padding: const EdgeInsets.fromLTRB(20, 20, 12, 0),
             child: Row(
               children: [
-                const Icon(Icons.cell_tower_rounded,
-                    color: Color(0xFF818CF8), size: 22),
+                const Icon(
+                  Icons.cell_tower_rounded,
+                  color: Color(0xFF818CF8),
+                  size: 22,
+                ),
                 const SizedBox(width: 10),
                 const Text(
                   'Stream Servers',
@@ -74,9 +78,11 @@ class _ServerSheetState extends State<ServerSheet> {
                 ),
                 const Spacer(),
                 IconButton(
-                  icon: const Icon(Icons.add_circle_outline,
-                      color: Color(0xFF818CF8)),
-                  onPressed: () => _showAddEditDialog(),
+                  icon: Icon(
+                    Icons.add_circle_outline,
+                    color: isLocked ? Colors.white24 : const Color(0xFF818CF8),
+                  ),
+                  onPressed: isLocked ? null : () => _showAddEditDialog(),
                 ),
               ],
             ),
@@ -87,21 +93,26 @@ class _ServerSheetState extends State<ServerSheet> {
               padding: const EdgeInsets.symmetric(vertical: 40),
               child: Column(
                 children: [
-                  Icon(Icons.dns_outlined,
-                      color: Colors.white.withValues(alpha: 0.15), size: 48),
+                  Icon(
+                    Icons.dns_outlined,
+                    color: Colors.white.withValues(alpha: 0.15),
+                    size: 48,
+                  ),
                   const SizedBox(height: 12),
                   Text(
                     'No servers yet',
                     style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.3),
-                        fontSize: 14),
+                      color: Colors.white.withValues(alpha: 0.3),
+                      fontSize: 14,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     'Tap + to add your RTMP server',
                     style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.2),
-                        fontSize: 12),
+                      color: Colors.white.withValues(alpha: 0.2),
+                      fontSize: 12,
+                    ),
                   ),
                 ],
               ),
@@ -110,16 +121,20 @@ class _ServerSheetState extends State<ServerSheet> {
             Flexible(
               child: ListView.builder(
                 shrinkWrap: true,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 4,
+                ),
                 itemCount: _servers.length,
                 itemBuilder: (_, i) {
                   final server = _servers[i];
                   return _ServerTile(
                     server: server,
                     onTap: () => Navigator.pop(context, server),
-                    onEdit: () => _showAddEditDialog(index: i),
-                    onDelete: () => _confirmDelete(i),
+                    onEdit: isLocked
+                        ? null
+                        : () => _showAddEditDialog(index: i),
+                    onDelete: isLocked ? null : () => _confirmDelete(i),
                   );
                 },
               ),
@@ -131,6 +146,7 @@ class _ServerSheetState extends State<ServerSheet> {
   }
 
   void _showAddEditDialog({int? index}) {
+    if (_p.isLocked) return;
     final isEdit = index != null;
     final server = isEdit ? _servers[index] : null;
     final nameCtrl = TextEditingController(text: server?.name ?? '');
@@ -154,35 +170,44 @@ class _ServerSheetState extends State<ServerSheet> {
               const SizedBox(height: 12),
               _dialogField(urlCtrl, 'RTMP URL', 'rtmp://server.com/live'),
               const SizedBox(height: 12),
-              _dialogField(keyCtrl, 'Stream Key (optional)', 'leave empty if not needed'),
+              _dialogField(
+                keyCtrl,
+                'Stream Key (optional)',
+                'leave empty if not needed',
+              ),
             ],
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child:
-                const Text('Cancel', style: TextStyle(color: Colors.white38)),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white38),
+            ),
           ),
           FilledButton(
-            style:
-                FilledButton.styleFrom(backgroundColor: const Color(0xFF6366F1)),
-            onPressed: () {
-              final name = nameCtrl.text.trim();
-              final url = urlCtrl.text.trim();
-              if (name.isEmpty || url.isEmpty) return;
-              final cfg = ServerConfig(
-                name: name,
-                url: url,
-                streamKey: keyCtrl.text.trim(),
-              );
-              if (isEdit) {
-                _p.updateServer(index, cfg);
-              } else {
-                _p.addServer(cfg);
-              }
-              Navigator.pop(ctx);
-            },
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF6366F1),
+            ),
+            onPressed: _p.isLocked
+                ? null
+                : () {
+                    final name = nameCtrl.text.trim();
+                    final url = urlCtrl.text.trim();
+                    if (name.isEmpty || url.isEmpty) return;
+                    final cfg = ServerConfig(
+                      name: name,
+                      url: url,
+                      streamKey: keyCtrl.text.trim(),
+                    );
+                    if (isEdit) {
+                      _p.updateServer(index, cfg);
+                    } else {
+                      _p.addServer(cfg);
+                    }
+                    Navigator.pop(ctx);
+                  },
             child: Text(isEdit ? 'Save' : 'Add'),
           ),
         ],
@@ -190,8 +215,7 @@ class _ServerSheetState extends State<ServerSheet> {
     );
   }
 
-  Widget _dialogField(
-      TextEditingController ctrl, String label, String hint) {
+  Widget _dialogField(TextEditingController ctrl, String label, String hint) {
     return TextField(
       controller: ctrl,
       style: const TextStyle(color: Colors.white, fontSize: 14),
@@ -206,21 +230,26 @@ class _ServerSheetState extends State<ServerSheet> {
           borderRadius: BorderRadius.circular(10),
           borderSide: BorderSide.none,
         ),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 12,
+        ),
       ),
     );
   }
 
   void _confirmDelete(int index) {
+    if (_p.isLocked) return;
     final name = _servers[index].name;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1B2E),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete Server?',
-            style: TextStyle(color: Colors.white, fontSize: 17)),
+        title: const Text(
+          'Delete Server?',
+          style: TextStyle(color: Colors.white, fontSize: 17),
+        ),
         content: Text(
           'Remove "$name"?',
           style: const TextStyle(color: Colors.white54),
@@ -228,8 +257,10 @@ class _ServerSheetState extends State<ServerSheet> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child:
-                const Text('Cancel', style: TextStyle(color: Colors.white38)),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white38),
+            ),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
@@ -248,8 +279,8 @@ class _ServerSheetState extends State<ServerSheet> {
 class _ServerTile extends StatelessWidget {
   final ServerConfig server;
   final VoidCallback onTap;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
+  final VoidCallback? onEdit;
+  final VoidCallback? onDelete;
 
   const _ServerTile({
     required this.server,
@@ -268,8 +299,7 @@ class _ServerTile extends StatelessWidget {
       ),
       child: ListTile(
         contentPadding: const EdgeInsets.only(left: 16, right: 8),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         leading: Container(
           width: 40,
           height: 40,
@@ -282,15 +312,19 @@ class _ServerTile extends StatelessWidget {
               ],
             ),
           ),
-          child: const Icon(Icons.dns_rounded,
-              color: Color(0xFF818CF8), size: 20),
+          child: const Icon(
+            Icons.dns_rounded,
+            color: Color(0xFF818CF8),
+            size: 20,
+          ),
         ),
         title: Text(
           server.name,
           style: const TextStyle(
-              color: Colors.white,
-              fontSize: 15,
-              fontWeight: FontWeight.w500),
+            color: Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w500,
+          ),
         ),
         subtitle: Text(
           server.url,
@@ -302,14 +336,20 @@ class _ServerTile extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             IconButton(
-              icon: const Icon(Icons.edit_outlined,
-                  color: Colors.white24, size: 18),
+              icon: const Icon(
+                Icons.edit_outlined,
+                color: Colors.white24,
+                size: 18,
+              ),
               onPressed: onEdit,
               visualDensity: VisualDensity.compact,
             ),
             IconButton(
-              icon: const Icon(Icons.delete_outline,
-                  color: Colors.white24, size: 18),
+              icon: const Icon(
+                Icons.delete_outline,
+                color: Colors.white24,
+                size: 18,
+              ),
               onPressed: onDelete,
               visualDensity: VisualDensity.compact,
             ),

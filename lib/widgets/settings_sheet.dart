@@ -11,6 +11,11 @@ class SettingsSheet extends StatelessWidget {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
     return Consumer<LiveStreamProvider>(
       builder: (context, p, _) {
+        final isLiveSession =
+            p.status == StreamStatus.streaming ||
+            p.status == StreamStatus.connecting ||
+            p.status == StreamStatus.reconnecting;
+
         return ClipRRect(
           borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
           child: Container(
@@ -18,152 +23,220 @@ class SettingsSheet extends StatelessWidget {
             child: SingleChildScrollView(
               padding: EdgeInsets.fromLTRB(20, 0, 20, 16 + bottom),
               child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 12),
-                Center(
-                  child: Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.white24,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                const Row(
-                  children: [
-                    Icon(Icons.tune_rounded, color: Color(0xFF818CF8), size: 22),
-                    SizedBox(width: 10),
-                    Text(
-                      'Settings',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 12),
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(2),
                       ),
                     ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-
-                _sectionTitle('Camera'),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    _CameraOption(
-                      icon: Icons.camera_rear_rounded,
-                      label: 'Back',
-                      selected: !p.isFrontCamera,
-                      onTap: p.isLocked ? null : () => p.setCameraPosition(false),
-                    ),
-                    const SizedBox(width: 10),
-                    _CameraOption(
-                      icon: Icons.camera_front_rounded,
-                      label: 'Front',
-                      selected: p.isFrontCamera,
-                      onTap: p.isLocked ? null : () => p.setCameraPosition(true),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 22),
-
-                if (p.maxZoom > 1.0 || p.minZoom < 1.0) ...[
-                  _sectionTitle('Zoom (${p.currentZoom.toStringAsFixed(1)}x)'),
-                  const SizedBox(height: 4),
-                  SliderTheme(
-                    data: SliderThemeData(
-                      activeTrackColor: const Color(0xFF6366F1),
-                      inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
-                      thumbColor: const Color(0xFF818CF8),
-                      overlayColor: const Color(0xFF6366F1).withValues(alpha: 0.2),
-                      trackHeight: 3,
-                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                    ),
-                    child: Slider(
-                      value: p.currentZoom.clamp(p.minZoom, p.maxZoom),
-                      min: p.minZoom,
-                      max: p.maxZoom,
-                      onChanged: p.isLocked ? null : (v) => p.setZoom(v),
-                    ),
                   ),
-                  const SizedBox(height: 14),
-                ],
-
-                _sectionTitle('Resolution'),
-                const SizedBox(height: 8),
-                _ChipRow(
-                  options: const [
-                    'Native',
-                    '240p',
-                    '360p',
-                    '480p',
-                    '720p',
-                    '1080p',
-                    '1440p',
-                    '2160p',
-                  ],
-                  selected: p.resolution,
-                  onSelected: p.isLocked ? null : p.setResolution,
-                ),
-                const SizedBox(height: 22),
-
-                _sectionTitle('Frame Rate'),
-                const SizedBox(height: 8),
-                _ChipRow(
-                  options: const ['Native', '15 fps', '24 fps', '30 fps'],
-                  selected: p.isNativeFps ? 'Native' : '${p.customFps} fps',
-                  onSelected: p.isLocked ? null : (v) {
-                    if (v == 'Native') {
-                      p.setFpsNative();
-                    } else {
-                      p.setFpsCustom(int.parse(v.split(' ').first));
-                    }
-                  },
-                ),
-                const SizedBox(height: 22),
-
-                Row(
-                  children: [
-                    _sectionTitle('Stream Servers'),
-                    const Spacer(),
-                    GestureDetector(
-                      onTap: p.isLocked ? null : () => _showAddEditServerDialog(context, p),
-                      child: Icon(Icons.add_circle_outline,
-                          color: p.isLocked ? Colors.white24 : const Color(0xFF818CF8),
-                          size: 20),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                if (p.servers.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    child: Center(
-                      child: Text(
-                        'No servers yet — tap + to add',
+                  const SizedBox(height: 20),
+                  const Row(
+                    children: [
+                      Icon(
+                        Icons.tune_rounded,
+                        color: Color(0xFF818CF8),
+                        size: 22,
+                      ),
+                      SizedBox(width: 10),
+                      Text(
+                        'Settings',
                         style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.25),
-                          fontSize: 13,
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+
+                  _sectionTitle('Camera'),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      _CameraOption(
+                        icon: Icons.camera_rear_rounded,
+                        label: 'Back',
+                        selected: !p.isFrontCamera,
+                        onTap: p.isLocked
+                            ? null
+                            : () => p.setCameraPosition(false),
+                      ),
+                      const SizedBox(width: 10),
+                      _CameraOption(
+                        icon: Icons.camera_front_rounded,
+                        label: 'Front',
+                        selected: p.isFrontCamera,
+                        onTap: p.isLocked
+                            ? null
+                            : () => p.setCameraPosition(true),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 22),
+
+                  if (p.maxZoom > 1.0 || p.minZoom < 1.0) ...[
+                    _sectionTitle(
+                      'Zoom (${p.currentZoom.toStringAsFixed(1)}x)',
                     ),
-                  )
-                else
-                  ...List.generate(p.servers.length, (i) {
-                    final s = p.servers[i];
-                    return _ServerRow(
-                      server: s,
-                      onEdit: p.isLocked ? null : () => _showAddEditServerDialog(context, p, index: i),
-                      onDelete: p.isLocked ? null : () => _confirmDeleteServer(context, p, i),
-                    );
-                  }),
-                const SizedBox(height: 8),
-              ],
+                    const SizedBox(height: 4),
+                    SliderTheme(
+                      data: SliderThemeData(
+                        activeTrackColor: const Color(0xFF6366F1),
+                        inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
+                        thumbColor: const Color(0xFF818CF8),
+                        overlayColor: const Color(
+                          0xFF6366F1,
+                        ).withValues(alpha: 0.2),
+                        trackHeight: 3,
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 7,
+                        ),
+                      ),
+                      child: Slider(
+                        value: p.currentZoom.clamp(p.minZoom, p.maxZoom),
+                        min: p.minZoom,
+                        max: p.maxZoom,
+                        onChanged: p.isLocked ? null : (v) => p.setZoom(v),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                  ],
+
+                  _sectionTitle('Resolution'),
+                  const SizedBox(height: 8),
+                  _ChipRow(
+                    options: const [
+                      'Native',
+                      '240p',
+                      '360p',
+                      '480p',
+                      '720p',
+                      '1080p',
+                      '1440p',
+                      '2160p',
+                    ],
+                    selected: p.resolution,
+                    onSelected: p.isLocked ? null : p.setResolution,
+                  ),
+                  const SizedBox(height: 22),
+
+                  _sectionTitle('Frame Rate'),
+                  const SizedBox(height: 8),
+                  _ChipRow(
+                    options: const ['Native', '15 fps', '24 fps', '30 fps'],
+                    selected: p.isNativeFps ? 'Native' : '${p.customFps} fps',
+                    onSelected: p.isLocked
+                        ? null
+                        : (v) {
+                            if (v == 'Native') {
+                              p.setFpsNative();
+                            } else {
+                              p.setFpsCustom(int.parse(v.split(' ').first));
+                            }
+                          },
+                  ),
+                  const SizedBox(height: 22),
+
+                  _sectionTitle('Orientation'),
+                  const SizedBox(height: 8),
+                  if (isLiveSession)
+                    Text(
+                      'Live now: ${p.orientationMode == OrientationMode.portrait ? "Portrait" : "Landscape"} (fixed)',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.55),
+                        fontSize: 13,
+                      ),
+                    )
+                  else
+                    _ChipRow(
+                      options: const ['Portrait', 'Landscape'],
+                      selected: p.orientationMode == OrientationMode.portrait
+                          ? 'Portrait'
+                          : 'Landscape',
+                      onSelected: p.isLocked
+                          ? null
+                          : (v) => p.setOrientationMode(
+                              v == 'Landscape'
+                                  ? OrientationMode.landscape
+                                  : OrientationMode.portrait,
+                            ),
+                    ),
+                  if (isLiveSession || p.isLocked) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      isLiveSession
+                          ? 'Orientation is fixed while live'
+                          : 'Unlock to change orientation before going live',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.45),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 22),
+
+                  Row(
+                    children: [
+                      _sectionTitle('Stream Servers'),
+                      const Spacer(),
+                      GestureDetector(
+                        onTap: p.isLocked
+                            ? null
+                            : () => _showAddEditServerDialog(context, p),
+                        child: Icon(
+                          Icons.add_circle_outline,
+                          color: p.isLocked
+                              ? Colors.white24
+                              : const Color(0xFF818CF8),
+                          size: 20,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (p.servers.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      child: Center(
+                        child: Text(
+                          'No servers yet — tap + to add',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.25),
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    ...List.generate(p.servers.length, (i) {
+                      final s = p.servers[i];
+                      return _ServerRow(
+                        server: s,
+                        onEdit: p.isLocked
+                            ? null
+                            : () => _showAddEditServerDialog(
+                                context,
+                                p,
+                                index: i,
+                              ),
+                        onDelete: p.isLocked
+                            ? null
+                            : () => _confirmDeleteServer(context, p, i),
+                      );
+                    }),
+                  const SizedBox(height: 8),
+                ],
+              ),
             ),
-          ),
           ),
         );
       },
@@ -182,7 +255,11 @@ class SettingsSheet extends StatelessWidget {
     );
   }
 
-  void _showAddEditServerDialog(BuildContext context, LiveStreamProvider p, {int? index}) {
+  void _showAddEditServerDialog(
+    BuildContext context,
+    LiveStreamProvider p, {
+    int? index,
+  }) {
     if (p.isLocked) return;
     final isEdit = index != null;
     final server = isEdit ? p.servers[index] : null;
@@ -207,29 +284,44 @@ class SettingsSheet extends StatelessWidget {
               const SizedBox(height: 12),
               _dialogField(urlCtrl, 'RTMP URL', 'rtmp://server.com/live'),
               const SizedBox(height: 12),
-              _dialogField(keyCtrl, 'Stream Key (optional)', 'leave empty if not needed'),
+              _dialogField(
+                keyCtrl,
+                'Stream Key (optional)',
+                'leave empty if not needed',
+              ),
             ],
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white38)),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white38),
+            ),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF6366F1)),
-            onPressed: p.isLocked ? null : () {
-              final name = nameCtrl.text.trim();
-              final url = urlCtrl.text.trim();
-              if (name.isEmpty || url.isEmpty) return;
-              final cfg = ServerConfig(name: name, url: url, streamKey: keyCtrl.text.trim());
-              if (isEdit) {
-                p.updateServer(index, cfg);
-              } else {
-                p.addServer(cfg);
-              }
-              Navigator.pop(ctx);
-            },
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF6366F1),
+            ),
+            onPressed: p.isLocked
+                ? null
+                : () {
+                    final name = nameCtrl.text.trim();
+                    final url = urlCtrl.text.trim();
+                    if (name.isEmpty || url.isEmpty) return;
+                    final cfg = ServerConfig(
+                      name: name,
+                      url: url,
+                      streamKey: keyCtrl.text.trim(),
+                    );
+                    if (isEdit) {
+                      p.updateServer(index, cfg);
+                    } else {
+                      p.addServer(cfg);
+                    }
+                    Navigator.pop(ctx);
+                  },
             child: Text(isEdit ? 'Save' : 'Add'),
           ),
         ],
@@ -252,12 +344,19 @@ class SettingsSheet extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
           borderSide: BorderSide.none,
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 12,
+        ),
       ),
     );
   }
 
-  void _confirmDeleteServer(BuildContext context, LiveStreamProvider p, int index) {
+  void _confirmDeleteServer(
+    BuildContext context,
+    LiveStreamProvider p,
+    int index,
+  ) {
     if (p.isLocked) return;
     final name = p.servers[index].name;
     showDialog(
@@ -265,12 +364,21 @@ class SettingsSheet extends StatelessWidget {
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1B2E),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete Server?', style: TextStyle(color: Colors.white, fontSize: 17)),
-        content: Text('Remove "$name"?', style: const TextStyle(color: Colors.white54)),
+        title: const Text(
+          'Delete Server?',
+          style: TextStyle(color: Colors.white, fontSize: 17),
+        ),
+        content: Text(
+          'Remove "$name"?',
+          style: const TextStyle(color: Colors.white54),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white38)),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white38),
+            ),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
@@ -320,9 +428,11 @@ class _CameraOption extends StatelessWidget {
           ),
           child: Column(
             children: [
-              Icon(icon,
-                  color: selected ? const Color(0xFF818CF8) : Colors.white38,
-                  size: 28),
+              Icon(
+                icon,
+                color: selected ? const Color(0xFF818CF8) : Colors.white38,
+                size: 28,
+              ),
               const SizedBox(height: 6),
               Text(
                 label,
@@ -370,7 +480,11 @@ class _ServerRow extends StatelessWidget {
               children: [
                 Text(
                   server.name,
-                  style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
                 Text(
                   server.url,

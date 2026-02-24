@@ -1,7 +1,7 @@
 name: stream_app
 description: "Live streaming app with RTMP support"
 publish_to: 'none'
-version: 2.0.0+5
+version: 2.0.1+6
 
 environment:
   sdk: ^3.11.0

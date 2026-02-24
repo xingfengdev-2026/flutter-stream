@@ -46,7 +46,8 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     debugPrint('[OnAir] Lifecycle: $state');
 
-    final isLive = _provider.status == StreamStatus.streaming ||
+    final isLive =
+        _provider.status == StreamStatus.streaming ||
         _provider.status == StreamStatus.connecting ||
         _provider.status == StreamStatus.reconnecting;
 
@@ -58,14 +59,18 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     } else if (state == AppLifecycleState.paused) {
       if (isLive) _wasLiveBeforePause = true;
     } else if (state == AppLifecycleState.resumed) {
-      if (_wasLiveBeforePause && !_provider.userStopped && _provider.activeServer != null) {
+      if (_wasLiveBeforePause &&
+          !_provider.userStopped &&
+          _provider.activeServer != null) {
         _wasLiveBeforePause = false;
 
         if (_provider.status == StreamStatus.streaming) {
           debugPrint('[OnAir] Resumed — stream still alive, hands off');
           _provider.armResumeGrace();
         } else {
-          debugPrint('[OnAir] Resumed — stream died in background, recreating...');
+          debugPrint(
+            '[OnAir] Resumed — stream died in background, recreating...',
+          );
           _provider.notifyResumeFromBackground();
           _recreateController();
         }
@@ -95,8 +100,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     _controller = ApiVideoLiveStreamController(
       initialAudioConfig: AudioConfig(),
       initialVideoConfig: _provider.buildVideoConfig(),
-      initialCameraPosition:
-          _provider.isFrontCamera ? CameraPosition.front : CameraPosition.back,
+      initialCameraPosition: _provider.isFrontCamera
+          ? CameraPosition.front
+          : CameraPosition.back,
       onConnectionSuccess: () {
         if (_recreateGen == myGen) _provider.onConnectionSuccess();
       },
@@ -125,7 +131,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
 
     if (oldController != null) {
       Future.microtask(() {
-        try { oldController.dispose(); } catch (_) {}
+        try {
+          oldController.dispose();
+        } catch (_) {}
       });
     }
 
@@ -136,8 +144,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       final ctrl = ApiVideoLiveStreamController(
         initialAudioConfig: AudioConfig(),
         initialVideoConfig: _provider.buildVideoConfig(),
-        initialCameraPosition:
-            _provider.isFrontCamera ? CameraPosition.front : CameraPosition.back,
+        initialCameraPosition: _provider.isFrontCamera
+            ? CameraPosition.front
+            : CameraPosition.back,
         onConnectionSuccess: () {
           if (_recreateGen == myGen) _provider.onConnectionSuccess();
         },
@@ -152,7 +161,9 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
 
       if (_recreateGen != myGen || !mounted) {
         Future.microtask(() {
-          try { ctrl.dispose(); } catch (_) {}
+          try {
+            ctrl.dispose();
+          } catch (_) {}
         });
         return;
       }
@@ -170,8 +181,10 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       debugPrint('[OnAir] Controller recreation failed: $e');
       if (_recreateGen != myGen || !mounted) return;
       await Future.delayed(const Duration(seconds: 1));
-      if (_recreateGen == myGen && mounted &&
-          _provider.activeServer != null && !_provider.userStopped) {
+      if (_recreateGen == myGen &&
+          mounted &&
+          _provider.activeServer != null &&
+          !_provider.userStopped) {
         _recreateController();
       }
     }
@@ -245,20 +258,28 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
           else
             const Center(
               child: CircularProgressIndicator(
-                  color: Color(0xFF6366F1), strokeWidth: 2),
+                color: Color(0xFF6366F1),
+                strokeWidth: 2,
+              ),
             ),
 
           Positioned(
-            top: 0, left: 0, right: 0,
+            top: 0,
+            left: 0,
+            right: 0,
             child: RepaintBoundary(child: _TopBar()),
           ),
 
           Positioned(
-            bottom: 0, left: 0, right: 0,
-            child: RepaintBoundary(child: _BottomControls(
-              onRecord: _onRecordTap,
-              onSettings: _showSettings,
-            )),
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: RepaintBoundary(
+              child: _BottomControls(
+                onRecord: _onRecordTap,
+                onSettings: _showSettings,
+              ),
+            ),
           ),
         ],
       ),
@@ -274,10 +295,7 @@ class _TopBar extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [
-            Colors.black.withValues(alpha: 0.6),
-            Colors.transparent,
-          ],
+          colors: [Colors.black.withValues(alpha: 0.6), Colors.transparent],
         ),
       ),
       child: SafeArea(
@@ -291,7 +309,9 @@ class _TopBar extends StatelessWidget {
               return Row(
                 children: [
                   if (isLive || isReconnecting) ...[
-                    _PulsingDot(color: isReconnecting ? Colors.orange : Colors.red),
+                    _PulsingDot(
+                      color: isReconnecting ? Colors.orange : Colors.red,
+                    ),
                     const SizedBox(width: 8),
                     Text(
                       isReconnecting ? 'RECONNECTING' : 'LIVE',
@@ -341,10 +361,7 @@ class _BottomControls extends StatelessWidget {
   final VoidCallback onRecord;
   final VoidCallback onSettings;
 
-  const _BottomControls({
-    required this.onRecord,
-    required this.onSettings,
-  });
+  const _BottomControls({required this.onRecord, required this.onSettings});
 
   @override
   Widget build(BuildContext context) {
@@ -353,10 +370,7 @@ class _BottomControls extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.bottomCenter,
           end: Alignment.topCenter,
-          colors: [
-            Colors.black.withValues(alpha: 0.7),
-            Colors.transparent,
-          ],
+          colors: [Colors.black.withValues(alpha: 0.7), Colors.transparent],
         ),
       ),
       child: SafeArea(
@@ -375,17 +389,23 @@ class _BottomControls extends StatelessWidget {
                   if (p.status == StreamStatus.error)
                     _StatusBanner(
                       color: Colors.red,
-                      icon: const Icon(Icons.error_outline,
-                          color: Colors.white, size: 16),
+                      icon: const Icon(
+                        Icons.error_outline,
+                        color: Colors.white,
+                        size: 16,
+                      ),
                       text: p.errorMessage,
                     ),
                   if (isReconnecting)
                     _StatusBanner(
                       color: Colors.orange,
                       icon: const SizedBox(
-                        width: 14, height: 14,
+                        width: 14,
+                        height: 14,
                         child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2),
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
                       ),
                       text: p.errorMessage,
                     ),
@@ -402,7 +422,9 @@ class _BottomControls extends StatelessWidget {
                         onTap: p.isLocked ? null : p.toggleMute,
                       ),
                       _CircleButton(
-                        icon: p.isLocked ? Icons.lock_rounded : Icons.lock_open_rounded,
+                        icon: p.isLocked
+                            ? Icons.lock_rounded
+                            : Icons.lock_open_rounded,
                         label: p.isLocked ? 'Locked' : 'Lock',
                         active: p.isLocked,
                         onTap: p.toggleLock,
@@ -504,13 +526,15 @@ class _CircleButton extends StatelessWidget {
                   ? Colors.red.withValues(alpha: 0.3)
                   : Colors.white.withValues(alpha: 0.12),
             ),
-            child: Icon(icon,
-                color: !enabled
-                    ? Colors.white30
-                    : active
-                        ? Colors.red.shade300
-                        : Colors.white,
-                size: 22),
+            child: Icon(
+              icon,
+              color: !enabled
+                  ? Colors.white30
+                  : active
+                  ? Colors.red.shade300
+                  : Colors.white,
+              size: 22,
+            ),
           ),
           const SizedBox(height: 6),
           Text(
@@ -558,9 +582,12 @@ class _RecordButton extends StatelessWidget {
             child: Center(
               child: isConnecting
                   ? const SizedBox(
-                      width: 24, height: 24,
+                      width: 24,
+                      height: 24,
                       child: CircularProgressIndicator(
-                          color: Colors.red, strokeWidth: 2.5),
+                        color: Colors.red,
+                        strokeWidth: 2.5,
+                      ),
                     )
                   : AnimatedContainer(
                       duration: const Duration(milliseconds: 250),
@@ -569,15 +596,18 @@ class _RecordButton extends StatelessWidget {
                       height: isLive ? 24 : 58,
                       decoration: BoxDecoration(
                         color: Colors.red,
-                        borderRadius:
-                            BorderRadius.circular(isLive ? 6 : 29),
+                        borderRadius: BorderRadius.circular(isLive ? 6 : 29),
                       ),
                     ),
             ),
           ),
           const SizedBox(height: 6),
           Text(
-            isLive ? 'Stop' : isConnecting ? 'Connecting' : 'Go Live',
+            isLive
+                ? 'Stop'
+                : isConnecting
+                ? 'Connecting'
+                : 'Go Live',
             style: TextStyle(
               color: isLive ? Colors.red.shade300 : Colors.white60,
               fontSize: 11,
@@ -622,7 +652,8 @@ class _PulsingDotState extends State<_PulsingDot>
       child: FadeTransition(
         opacity: Tween(begin: 0.3, end: 1.0).animate(_ctrl),
         child: Container(
-          width: 10, height: 10,
+          width: 10,
+          height: 10,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: widget.color,
@@ -645,8 +676,11 @@ class _PermissionPlaceholder extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.videocam_off_rounded,
-                color: Colors.white24, size: 56),
+            const Icon(
+              Icons.videocam_off_rounded,
+              color: Colors.white24,
+              size: 56,
+            ),
             const SizedBox(height: 16),
             const Text(
               'Camera & Microphone access needed',
@@ -661,7 +695,8 @@ class _PermissionPlaceholder extends StatelessWidget {
                 foregroundColor: const Color(0xFF818CF8),
                 side: const BorderSide(color: Color(0xFF6366F1)),
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
             ),
           ],

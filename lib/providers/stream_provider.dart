@@ -3,12 +3,16 @@ import 'dart:io';
 import 'package:apivideo_live_stream/apivideo_live_stream.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/stream_config.dart';
 import '../services/foreground_service.dart';
 import '../services/server_service.dart';
 
 enum StreamStatus { idle, connecting, streaming, reconnecting, error }
+
+enum OrientationMode { landscape, portrait }
 
 class LiveStreamProvider extends ChangeNotifier {
   final ServerService _serverService = ServerService();
@@ -60,6 +64,9 @@ class LiveStreamProvider extends ChangeNotifier {
   bool _isLocked = false;
   bool get isLocked => _isLocked;
 
+  OrientationMode _orientationMode = OrientationMode.portrait;
+  OrientationMode get orientationMode => _orientationMode;
+
   double _currentZoom = 1.0;
   double get currentZoom => _currentZoom;
   double _minZoom = 1.0;
@@ -88,6 +95,7 @@ class LiveStreamProvider extends ChangeNotifier {
   VoidCallback? onControllerNeedsRecreate;
 
   LiveStreamProvider() {
+    _applyOrientation();
     _loadServers();
     _initConnectivityListener();
   }
@@ -100,22 +108,27 @@ class LiveStreamProvider extends ChangeNotifier {
 
       debugPrint('[OnAir] Network changed: $result');
 
-      final isActive = _status == StreamStatus.streaming ||
+      final isActive =
+          _status == StreamStatus.streaming ||
           _status == StreamStatus.connecting ||
           _status == StreamStatus.reconnecting;
 
       if (isActive && _activeServer != null && !userStopped) {
-        final hasNetwork = result.any((r) =>
-            r == ConnectivityResult.wifi ||
-            r == ConnectivityResult.mobile ||
-            r == ConnectivityResult.ethernet);
+        final hasNetwork = result.any(
+          (r) =>
+              r == ConnectivityResult.wifi ||
+              r == ConnectivityResult.mobile ||
+              r == ConnectivityResult.ethernet,
+        );
 
         if (hasNetwork) {
           _networkDebounce?.cancel();
           _networkDebounce = Timer(const Duration(milliseconds: 800), () {
             if (userStopped || _activeServer == null) return;
             if (_status == StreamStatus.streaming) {
-              debugPrint('[OnAir] Network changed but stream still alive — skipping reconnect');
+              debugPrint(
+                '[OnAir] Network changed but stream still alive — skipping reconnect',
+              );
               return;
             }
             debugPrint('[OnAir] Network stable, forcing reconnect...');
@@ -288,7 +301,10 @@ class LiveStreamProvider extends ChangeNotifier {
     if (isStreaming && _activeServer != null) {
       debugPrint('[OnAir] Restarting stream with new config...');
       final server = _activeServer!;
-      final (effectiveUrl, effectiveKey) = splitUrlKey(server.url, server.streamKey);
+      final (effectiveUrl, effectiveKey) = splitUrlKey(
+        server.url,
+        server.streamKey,
+      );
 
       _selfStopping = true;
       try {
@@ -304,14 +320,19 @@ class LiveStreamProvider extends ChangeNotifier {
 
       await Future.delayed(const Duration(milliseconds: 200));
 
-      if (_status != StreamStatus.streaming || _controller == null || userStopped) return;
+      if (_status != StreamStatus.streaming ||
+          _controller == null ||
+          userStopped) {
+        return;
+      }
 
       try {
-        await _controller!.startStreaming(
-          streamKey: effectiveKey,
-          url: effectiveUrl,
-        ).timeout(const Duration(seconds: 5));
-        debugPrint('[OnAir] Stream restarted with new config (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})');
+        await _controller!
+            .startStreaming(streamKey: effectiveKey, url: effectiveUrl)
+            .timeout(const Duration(seconds: 5));
+        debugPrint(
+          '[OnAir] Stream restarted with new config (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})',
+        );
       } catch (e) {
         debugPrint('[OnAir] Restart stream error: $e');
         _scheduleReconnect();
@@ -319,7 +340,9 @@ class LiveStreamProvider extends ChangeNotifier {
     } else {
       try {
         await _controller!.setVideoConfig(buildVideoConfig());
-        debugPrint('[OnAir] VideoConfig applied (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})');
+        debugPrint(
+          '[OnAir] VideoConfig applied (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})',
+        );
       } catch (e) {
         debugPrint('[OnAir] setVideoConfig error: $e');
       }
@@ -333,6 +356,31 @@ class LiveStreamProvider extends ChangeNotifier {
     _configDebounce = Timer(const Duration(milliseconds: 300), () {
       _applyVideoConfig();
     });
+  }
+
+  bool get _isStreamingSession =>
+      _status == StreamStatus.streaming ||
+      _status == StreamStatus.connecting ||
+      _status == StreamStatus.reconnecting;
+
+  void setOrientationMode(OrientationMode mode) {
+    if (_isLocked || _isStreamingSession) return;
+    if (_orientationMode == mode) return;
+    _orientationMode = mode;
+    _applyOrientation();
+    notifyListeners();
+  }
+
+  void _applyOrientation() {
+    switch (_orientationMode) {
+      case OrientationMode.landscape:
+        SystemChrome.setPreferredOrientations([
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
+      case OrientationMode.portrait:
+        SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    }
   }
 
   void toggleLock() {
@@ -371,7 +419,12 @@ class LiveStreamProvider extends ChangeNotifier {
     }
 
     final schemeEnd = url.indexOf('://');
-    if (schemeEnd < 0) return (url.isEmpty ? 'rtmp://localhost' : url, key.isEmpty ? 'stream' : key);
+    if (schemeEnd < 0) {
+      return (
+        url.isEmpty ? 'rtmp://localhost' : url,
+        key.isEmpty ? 'stream' : key,
+      );
+    }
 
     final afterScheme = url.substring(schemeEnd + 3);
     final firstSlash = afterScheme.indexOf('/');
@@ -423,8 +476,9 @@ class LiveStreamProvider extends ChangeNotifier {
       }
 
       final pathStart = cleaned.indexOf('/');
-      final hostPart =
-          pathStart > 0 ? cleaned.substring(0, pathStart) : cleaned;
+      final hostPart = pathStart > 0
+          ? cleaned.substring(0, pathStart)
+          : cleaned;
       final colonIdx = hostPart.lastIndexOf(':');
       if (colonIdx > 0) {
         host = hostPart.substring(0, colonIdx);
@@ -433,8 +487,11 @@ class LiveStreamProvider extends ChangeNotifier {
         host = hostPart;
       }
 
-      final socket = await Socket.connect(host, port,
-          timeout: const Duration(seconds: 2));
+      final socket = await Socket.connect(
+        host,
+        port,
+        timeout: const Duration(seconds: 2),
+      );
       socket.destroy();
       return true;
     } catch (e) {
@@ -468,7 +525,9 @@ class LiveStreamProvider extends ChangeNotifier {
     final myGen = _generation;
 
     if (_controller == null || _controllerBusy) {
-      debugPrint('[OnAir] attemptConnect deferred (ctrl=${_controller != null}, busy=$_controllerBusy)');
+      debugPrint(
+        '[OnAir] attemptConnect deferred (ctrl=${_controller != null}, busy=$_controllerBusy)',
+      );
       _scheduleRetry(server);
       return;
     }
@@ -485,7 +544,10 @@ class LiveStreamProvider extends ChangeNotifier {
       return;
     }
 
-    final (effectiveUrl, effectiveKey) = splitUrlKey(server.url, server.streamKey);
+    final (effectiveUrl, effectiveKey) = splitUrlKey(
+      server.url,
+      server.streamKey,
+    );
     debugPrint('[OnAir] Connecting to url=$effectiveUrl key=$effectiveKey');
 
     _controllerBusy = true;
@@ -510,13 +572,12 @@ class LiveStreamProvider extends ChangeNotifier {
       if (userStopped || _generation != myGen) return;
 
       try {
-        await _controller!.startStreaming(
-          streamKey: effectiveKey,
-          url: effectiveUrl,
-        ).timeout(const Duration(seconds: 5));
+        await _controller!
+            .startStreaming(streamKey: effectiveKey, url: effectiveUrl)
+            .timeout(const Duration(seconds: 5));
         if (_generation == myGen &&
             (_status == StreamStatus.connecting ||
-             _status == StreamStatus.reconnecting)) {
+                _status == StreamStatus.reconnecting)) {
           _onStreamingEstablished();
         }
       } catch (e) {
@@ -579,7 +640,9 @@ class LiveStreamProvider extends ChangeNotifier {
       if (_reconnectAttempt > 0 &&
           _reconnectAttempt % 2 == 0 &&
           onControllerNeedsRecreate != null) {
-        debugPrint('[OnAir] Requesting controller recreation (attempt $_reconnectAttempt)');
+        debugPrint(
+          '[OnAir] Requesting controller recreation (attempt $_reconnectAttempt)',
+        );
         _generation++;
         _controllerBusy = false;
         _selfStopping = false;
@@ -601,7 +664,8 @@ class LiveStreamProvider extends ChangeNotifier {
         return;
       }
 
-      final shouldBeActive = _status == StreamStatus.connecting ||
+      final shouldBeActive =
+          _status == StreamStatus.connecting ||
           _status == StreamStatus.streaming ||
           _status == StreamStatus.reconnecting;
 
@@ -667,7 +731,8 @@ class LiveStreamProvider extends ChangeNotifier {
     if (_controller == null) return;
     try {
       await _controller!.setCameraPosition(
-          front ? CameraPosition.front : CameraPosition.back);
+        front ? CameraPosition.front : CameraPosition.back,
+      );
       _isFrontCamera = front;
       await loadZoomRange();
       notifyListeners();
@@ -766,14 +831,17 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   void onDisconnect() {
-    debugPrint('[OnAir] onDisconnect (selfStop=$_selfStopping, userStop=$userStopped)');
+    debugPrint(
+      '[OnAir] onDisconnect (selfStop=$_selfStopping, userStop=$userStopped)',
+    );
     if (_selfStopping || userStopped) return;
     if (_inResumeGrace) {
       debugPrint('[OnAir] Ignoring onDisconnect during resume grace');
       return;
     }
 
-    final wasActive = _status == StreamStatus.streaming ||
+    final wasActive =
+        _status == StreamStatus.streaming ||
         _status == StreamStatus.connecting ||
         _status == StreamStatus.reconnecting;
     if (!wasActive) return;
