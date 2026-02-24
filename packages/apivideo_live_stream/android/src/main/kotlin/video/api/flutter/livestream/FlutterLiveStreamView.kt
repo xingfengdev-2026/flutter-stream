@@ -45,6 +45,12 @@ class FlutterLiveStreamView(
         initialOnErrorListener = this
     )
 
+    init {
+        // StreamPack mirrors front camera output by default.
+        // For live streaming, force non-mirrored output.
+        disableFrontCameraMirroring()
+    }
+
     private var _isPreviewing = false
     private var _isStreaming = false
     val isStreaming: Boolean
@@ -126,6 +132,7 @@ class FlutterLiveStreamView(
             onGranted = {
                 try {
                     streamer.camera = camera
+                    disableFrontCameraMirroring()
                     onSuccess()
                 } catch (e: Exception) {
                     onError(e)
@@ -332,6 +339,101 @@ class FlutterLiveStreamView(
                 return field.get(obj)
             } catch (_: NoSuchFieldException) {
                 clazz = clazz.superclass
+            }
+        }
+        return null
+    }
+
+    private fun disableFrontCameraMirroring() {
+        try {
+            val providers = LinkedHashSet<Any>()
+
+            val cameraSource = getFieldWalkingUp(streamer, "cameraSource")
+            val cameraSourceProvider = cameraSource?.let {
+                getFieldWalkingUp(it, "orientationProvider")
+            }
+            if (cameraSourceProvider != null) providers.add(cameraSourceProvider)
+
+            val baseSourceProvider = invokeNoArgMethodWalkingUp(
+                streamer,
+                "getSourceOrientationProvider",
+            )
+            if (baseSourceProvider != null) providers.add(baseSourceProvider)
+
+            val videoEncoder = getFieldWalkingUp(streamer, "videoEncoder")
+            val encoderProvider = videoEncoder?.let {
+                getFieldWalkingUp(it, "orientationProvider")
+            }
+            if (encoderProvider != null) providers.add(encoderProvider)
+
+            val codecSurface = videoEncoder?.let { getFieldWalkingUp(it, "codecSurface") }
+            val codecSurfaceProvider = codecSurface?.let {
+                getFieldWalkingUp(it, "orientationProvider")
+            }
+            if (codecSurfaceProvider != null) providers.add(codecSurfaceProvider)
+
+            if (providers.isEmpty()) {
+                Log.w(TAG, "No orientation providers found for mirror fix")
+                return
+            }
+
+            var changed = false
+            for (provider in providers) {
+                if (disableFrontFacingMap(provider)) {
+                    changed = true
+                }
+                notifyOrientationListeners(provider)
+            }
+
+            if (changed) {
+                Log.d(TAG, "Front camera mirroring disabled and orientation refreshed")
+            } else {
+                Log.d(TAG, "Mirror fix applied (no front-facing map changes)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to disable front camera mirroring: ${e.message}")
+        }
+    }
+
+    private fun disableFrontFacingMap(orientationProvider: Any): Boolean {
+        @Suppress("UNCHECKED_CAST")
+        val map = getFieldWalkingUp(orientationProvider, "isFrontFacingMap")
+            as? MutableMap<String, Boolean>
+            ?: return false
+
+        var changed = false
+        for ((cameraId, isFrontFacing) in map.toMap()) {
+            if (isFrontFacing) {
+                map[cameraId] = false
+                changed = true
+            }
+        }
+        return changed
+    }
+
+    private fun notifyOrientationListeners(orientationProvider: Any) {
+        val listeners = getFieldWalkingUp(orientationProvider, "listeners") as? Set<*> ?: return
+        for (listener in listeners) {
+            if (listener == null) continue
+            try {
+                val method = listener.javaClass.getMethod("onOrientationChanged")
+                method.invoke(listener)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun invokeNoArgMethodWalkingUp(obj: Any, methodName: String): Any? {
+        var clazz: Class<*>? = obj.javaClass
+        while (clazz != null) {
+            try {
+                val method = clazz.getDeclaredMethod(methodName)
+                method.isAccessible = true
+                return method.invoke(obj)
+            } catch (_: NoSuchMethodException) {
+                clazz = clazz.superclass
+            } catch (_: Exception) {
+                return null
             }
         }
         return null
