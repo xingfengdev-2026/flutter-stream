@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:apivideo_live_stream/apivideo_live_stream.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/stream_config.dart';
@@ -365,7 +366,22 @@ class LiveStreamProvider extends ChangeNotifier {
     if (_isLocked || _isStreamingSession) return;
     if (_orientationMode == mode) return;
     _orientationMode = mode;
+    _applyOrientation();
     notifyListeners();
+  }
+
+  void _applyOrientation() {
+    switch (_orientationMode) {
+      case OrientationMode.landscape:
+        SystemChrome.setPreferredOrientations([
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
+      case OrientationMode.portrait:
+        SystemChrome.setPreferredOrientations([
+          DeviceOrientation.portraitUp,
+        ]);
+    }
   }
 
   void toggleLock() {
