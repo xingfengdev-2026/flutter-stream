@@ -48,6 +48,9 @@ class LiveStreamProvider extends ChangeNotifier {
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
   bool _hasNetwork = true;
+  Timer? _healthProbeTimer;
+  Timer? _streamHealthTimer;
+  String _lastNetworkSignature = '';
 
   DateTime _resumeGraceUntil = DateTime(0);
 
@@ -109,20 +112,61 @@ class LiveStreamProvider extends ChangeNotifier {
       final hadNetwork = _hasNetwork;
       _hasNetwork = hasNetwork;
 
-      debugPrint('[OnAir] Network changed: $result (has=$hasNetwork, had=$hadNetwork)');
+      // Build a signature of current network types to detect path changes
+      // (e.g. wifi→mobile, mobile→wifi, 4G→5G cell handover).
+      final sig = result
+          .where((r) =>
+              r == ConnectivityResult.wifi ||
+              r == ConnectivityResult.mobile ||
+              r == ConnectivityResult.ethernet)
+          .map((r) => r.name)
+          .toList()
+        ..sort();
+      final networkSignature = sig.join(',');
+      final pathChanged = networkSignature != _lastNetworkSignature;
+      _lastNetworkSignature = networkSignature;
 
-      // Network restored while we have an active session
-      if (!hadNetwork && hasNetwork && _activeServer != null && !userStopped) {
+      debugPrint(
+        '[OnAir] Network changed: $result '
+        '(has=$hasNetwork, had=$hadNetwork, path=$networkSignature, changed=$pathChanged)',
+      );
+
+      if (_activeServer == null || userStopped) return;
+
+      // Case 1: Complete network loss → restore
+      if (!hadNetwork && hasNetwork) {
         if (_status == StreamStatus.reconnecting) {
           debugPrint('[OnAir] Network restored — accelerating reconnect');
           _reconnectTimer?.cancel();
           _retryTimer?.cancel();
           _reconnectAttempt = 0;
           _scheduleReconnect();
+        } else if (_status == StreamStatus.streaming) {
+          debugPrint('[OnAir] Network restored while "streaming" — connection is certainly dead');
+          _forceReconnect();
         }
+        return;
       }
 
-      // Network lost — cancel in-flight reconnect attempts to save resources
+      // Case 2: Network path changed while still connected (WiFi↔5G, 4G↔5G, etc.)
+      // The old TCP socket is bound to the old interface → RTMP connection is dead
+      // even though the phone still has internet.
+      if (hadNetwork && hasNetwork && pathChanged) {
+        if (_status == StreamStatus.streaming) {
+          debugPrint('[OnAir] Network path changed (e.g. WiFi↔5G) — forcing reconnect');
+          _forceReconnect();
+        } else if (_status == StreamStatus.reconnecting) {
+          // Already reconnecting — reset attempts for faster retry on new path
+          debugPrint('[OnAir] Network path changed during reconnect — resetting attempts');
+          _reconnectTimer?.cancel();
+          _retryTimer?.cancel();
+          _reconnectAttempt = 0;
+          _scheduleReconnect();
+        }
+        return;
+      }
+
+      // Case 3: Network lost
       if (hadNetwork && !hasNetwork) {
         debugPrint('[OnAir] Network lost — pausing reconnect attempts');
         _reconnectTimer?.cancel();
@@ -135,6 +179,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _generation++;
     _reconnectTimer?.cancel();
     _retryTimer?.cancel();
+    _stopStreamHealthCheck();
     _reconnectAttempt = 0;
     _controllerBusy = false;
     _selfStopping = false;
@@ -289,6 +334,11 @@ class LiveStreamProvider extends ChangeNotifier {
         server.streamKey,
       );
 
+      // Arm resume grace so the self-triggered disconnect is fully ignored,
+      // even if the native callback arrives asynchronously after _selfStopping
+      // is cleared.
+      _resumeGraceUntil = DateTime.now().add(const Duration(seconds: 3));
+
       _selfStopping = true;
       try {
         await _controller!.stopStreaming().timeout(const Duration(seconds: 2));
@@ -311,13 +361,18 @@ class LiveStreamProvider extends ChangeNotifier {
 
       try {
         await _controller!
-            .startStreaming(streamKey: effectiveKey, url: effectiveUrl)
-            .timeout(const Duration(seconds: 5));
+            .startStreaming(streamKey: effectiveKey, url: effectiveUrl);
         debugPrint(
-          '[OnAir] Stream restarted with new config (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})',
+          '[OnAir] Stream restart command sent (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})',
         );
+        // Connection success/failure arrives via callbacks.
+        // Clear grace after a delay so normal callbacks resume.
+        Future.delayed(const Duration(seconds: 3), () {
+          _resumeGraceUntil = DateTime(0);
+        });
       } catch (e) {
         debugPrint('[OnAir] Restart stream error: $e');
+        _resumeGraceUntil = DateTime(0);
         _scheduleReconnect();
       }
     } else {
@@ -475,7 +530,7 @@ class LiveStreamProvider extends ChangeNotifier {
       final socket = await Socket.connect(
         host,
         port,
-        timeout: const Duration(seconds: 2),
+        timeout: const Duration(milliseconds: 1500),
       );
       socket.destroy();
       return true;
@@ -508,6 +563,7 @@ class LiveStreamProvider extends ChangeNotifier {
     if (userStopped) return;
 
     final myGen = _generation;
+    final isReconnect = _reconnectAttempt > 0;
 
     if (_controller == null || _controllerBusy) {
       debugPrint(
@@ -520,13 +576,22 @@ class LiveStreamProvider extends ChangeNotifier {
     await _waitPendingSettings();
     if (userStopped || _generation != myGen || _controller == null) return;
 
-    final reachable = await _probeServer(server.url);
-    if (userStopped || _generation != myGen) return;
+    // Skip TCP probe for first 4 reconnect attempts — go straight to RTMP.
+    // This saves ~2s per failed attempt in tunnels/dead-spots and lets us
+    // reconnect the instant network returns.
+    final skipProbe = isReconnect && _reconnectAttempt <= 4;
 
-    if (!reachable) {
-      debugPrint('[OnAir] Server unreachable, will retry...');
-      if (_generation == myGen) _scheduleReconnect();
-      return;
+    if (!skipProbe) {
+      final reachable = await _probeServer(server.url);
+      if (userStopped || _generation != myGen) return;
+
+      if (!reachable) {
+        debugPrint('[OnAir] Server unreachable, will retry...');
+        if (_generation == myGen) _scheduleReconnect();
+        return;
+      }
+    } else {
+      debugPrint('[OnAir] Skipping TCP probe (fast reconnect attempt $_reconnectAttempt)');
     }
 
     final (effectiveUrl, effectiveKey) = splitUrlKey(
@@ -538,10 +603,18 @@ class LiveStreamProvider extends ChangeNotifier {
     _controllerBusy = true;
     _pendingReconnect = false;
 
+    // Use shorter timeouts during reconnection for faster cycling
+    final stopTimeout = isReconnect
+        ? const Duration(seconds: 1)
+        : const Duration(seconds: 2);
+    final connectTimeout = isReconnect && _reconnectAttempt <= 3
+        ? const Duration(seconds: 3)
+        : const Duration(seconds: 5);
+
     try {
       _selfStopping = true;
       try {
-        await _controller!.stopStreaming().timeout(const Duration(seconds: 2));
+        await _controller!.stopStreaming().timeout(stopTimeout);
       } catch (_) {}
 
       if (_generation != myGen) return;
@@ -550,21 +623,23 @@ class LiveStreamProvider extends ChangeNotifier {
 
       if (userStopped) return;
 
-      try {
-        await _controller!.startPreview().timeout(const Duration(seconds: 3));
-      } catch (_) {}
+      // Skip startPreview during reconnection — camera preview is already
+      // running. This saves 0-3 seconds per reconnect cycle.
+      if (!isReconnect) {
+        try {
+          await _controller!.startPreview().timeout(const Duration(seconds: 3));
+        } catch (_) {}
 
-      if (userStopped || _generation != myGen) return;
+        if (userStopped || _generation != myGen) return;
+      }
 
       try {
+        // startStreaming returns immediately — the native layer connects
+        // asynchronously on IO thread. Success/failure will arrive via
+        // onConnectionSuccess / onConnectionFailed callbacks.
         await _controller!
-            .startStreaming(streamKey: effectiveKey, url: effectiveUrl)
-            .timeout(const Duration(seconds: 5));
-        if (_generation == myGen &&
-            (_status == StreamStatus.connecting ||
-                _status == StreamStatus.reconnecting)) {
-          _onStreamingEstablished();
-        }
+            .startStreaming(streamKey: effectiveKey, url: effectiveUrl);
+        debugPrint('[OnAir] startStreaming command sent (gen=$myGen)');
       } catch (e) {
         debugPrint('[OnAir] startStreaming error: $e');
       }
@@ -577,12 +652,27 @@ class LiveStreamProvider extends ChangeNotifier {
 
     if (userStopped) return;
 
-    if (_pendingReconnect ||
-        (_generation == myGen &&
-            _status != StreamStatus.streaming &&
-            _activeServer != null)) {
+    // If a pending reconnect was flagged while we were busy, handle it now.
+    if (_pendingReconnect) {
       _pendingReconnect = false;
       _scheduleReconnect();
+      return;
+    }
+
+    // startStreaming is now async (native side connects on IO thread).
+    // Set a timeout: if onConnectionSuccess/onConnectionFailed doesn't
+    // arrive within connectTimeout, assume it failed and retry.
+    if (_generation == myGen &&
+        _status != StreamStatus.streaming &&
+        _activeServer != null) {
+      _retryTimer?.cancel();
+      _retryTimer = Timer(connectTimeout, () {
+        if (userStopped || _generation != myGen || _activeServer == null) return;
+        if (_status != StreamStatus.streaming) {
+          debugPrint('[OnAir] Native connect timeout — scheduling reconnect');
+          _scheduleReconnect();
+        }
+      });
     }
   }
 
@@ -603,7 +693,47 @@ class LiveStreamProvider extends ChangeNotifier {
     if (_duration == Duration.zero) {
       _startTimer();
     }
+    _startStreamHealthCheck();
     notifyListeners();
+  }
+
+  /// Periodic TCP probe while streaming. Catches stale connections from
+  /// cell tower handovers where connectivity_plus fires no event.
+  /// If the RTMP server becomes unreachable, the RTMP connection is dead.
+  int _healthFailCount = 0;
+
+  void _startStreamHealthCheck() {
+    _streamHealthTimer?.cancel();
+    _healthFailCount = 0;
+    _streamHealthTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (userStopped || _activeServer == null) {
+        _streamHealthTimer?.cancel();
+        return;
+      }
+      if (_status != StreamStatus.streaming) {
+        _streamHealthTimer?.cancel();
+        return;
+      }
+      _probeServer(_activeServer!.url).then((reachable) {
+        if (userStopped || _status != StreamStatus.streaming) return;
+        if (!reachable) {
+          _healthFailCount++;
+          debugPrint('[OnAir] Stream health: probe failed ($_healthFailCount/2)');
+          if (_healthFailCount >= 2) {
+            debugPrint('[OnAir] Stream health: 2 consecutive failures — forcing reconnect');
+            _forceReconnect();
+          }
+        } else {
+          _healthFailCount = 0;
+        }
+      }).catchError((_) {});
+    });
+  }
+
+  void _stopStreamHealthCheck() {
+    _streamHealthTimer?.cancel();
+    _streamHealthTimer = null;
+    _healthFailCount = 0;
   }
 
   void _scheduleReconnect() {
@@ -624,9 +754,19 @@ class LiveStreamProvider extends ChangeNotifier {
       return;
     }
 
-    final delayMs = _reconnectAttempt <= 1
-        ? 0
-        : (_reconnectAttempt.clamp(2, 6) - 1) * 1000;
+    // Aggressive backoff for fast recovery after tunnels/dead-spots:
+    // Attempts 1-3: near-instant (0, 200, 500ms) — catch brief outages
+    // Attempts 4-6: short (1s, 1.5s, 2s) — network stabilizing
+    // Attempts 7+: cap at 3s — persistent issue, save resources
+    final delayMs = switch (_reconnectAttempt) {
+      1 => 0,
+      2 => 200,
+      3 => 500,
+      4 => 1000,
+      5 => 1500,
+      6 => 2000,
+      _ => 3000,
+    };
     final gen = _generation;
     _reconnectTimer = Timer(Duration(milliseconds: delayMs), () {
       if (userStopped || _activeServer == null || _generation != gen) return;
@@ -637,9 +777,10 @@ class LiveStreamProvider extends ChangeNotifier {
         return;
       }
 
-      if (_reconnectAttempt > 0 &&
-          _reconnectAttempt % 6 == 0 &&
-          onControllerNeedsRecreate != null) {
+      // Only recreate controller once after many consecutive failures.
+      // Use attempt 10 (not sooner) to avoid thrashing during intermittent
+      // network. After recreation, reset to 0 so next cycle is fresh.
+      if (_reconnectAttempt == 10 && onControllerNeedsRecreate != null) {
         debugPrint(
           '[OnAir] Requesting controller recreation (attempt $_reconnectAttempt)',
         );
@@ -658,7 +799,7 @@ class LiveStreamProvider extends ChangeNotifier {
 
   void _startWatchdog() {
     _watchdogTimer?.cancel();
-    _watchdogTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+    _watchdogTimer = Timer.periodic(const Duration(seconds: 6), (_) {
       if (userStopped || _activeServer == null) {
         _watchdogTimer?.cancel();
         return;
@@ -676,12 +817,35 @@ class LiveStreamProvider extends ChangeNotifier {
 
       if (_recreationPending) return;
 
+      // If we're reconnecting but no timer is active and controller isn't busy,
+      // the reconnect loop has stalled (e.g. _hasNetwork was false and never
+      // got the restore event). Kick it.
       if (!_controllerBusy &&
           _status != StreamStatus.streaming &&
           !_isTimerActive(_reconnectTimer) &&
           !_isTimerActive(_retryTimer)) {
-        debugPrint('[OnAir] Watchdog: reconnect loop dead, restarting...');
-        _scheduleReconnect();
+        if (!_hasNetwork) {
+          debugPrint('[OnAir] Watchdog: reconnect stalled (no network), re-checking...');
+          // connectivity_plus might have missed the restore event.
+          // Poll the actual connectivity state to break out of the stall.
+          Connectivity().checkConnectivity().then((result) {
+            final hasNet = result.any(
+              (r) =>
+                  r == ConnectivityResult.wifi ||
+                  r == ConnectivityResult.mobile ||
+                  r == ConnectivityResult.ethernet,
+            );
+            if (hasNet && !userStopped && _activeServer != null) {
+              debugPrint('[OnAir] Watchdog: network actually available! Resuming reconnect');
+              _hasNetwork = true;
+              _reconnectAttempt = 0;
+              _scheduleReconnect();
+            }
+          }).catchError((_) {});
+        } else {
+          debugPrint('[OnAir] Watchdog: reconnect loop dead, restarting...');
+          _scheduleReconnect();
+        }
       }
     });
   }
@@ -699,6 +863,8 @@ class LiveStreamProvider extends ChangeNotifier {
     _reconnectTimer?.cancel();
     _retryTimer?.cancel();
     _configDebounce?.cancel();
+    _healthProbeTimer?.cancel();
+    _stopStreamHealthCheck();
     _reconnectAttempt = 0;
     _pendingReconnect = false;
     _controllerBusy = false;
@@ -801,6 +967,7 @@ class LiveStreamProvider extends ChangeNotifier {
 
   void onConnectionSuccess() {
     debugPrint('[OnAir] onConnectionSuccess');
+    _retryTimer?.cancel();
     if (userStopped) return;
     if (_status == StreamStatus.connecting ||
         _status == StreamStatus.reconnecting) {
@@ -810,6 +977,7 @@ class LiveStreamProvider extends ChangeNotifier {
 
   void onConnectionFailed(String reason) {
     debugPrint('[OnAir] onConnectionFailed: $reason');
+    _retryTimer?.cancel();
     if (userStopped || _selfStopping) return;
     if (_inResumeGrace) {
       debugPrint('[OnAir] Ignoring onConnectionFailed during resume grace');
@@ -833,6 +1001,7 @@ class LiveStreamProvider extends ChangeNotifier {
     debugPrint(
       '[OnAir] onDisconnect (selfStop=$_selfStopping, userStop=$userStopped)',
     );
+    _retryTimer?.cancel();
     if (_selfStopping || userStopped) return;
     if (_inResumeGrace) {
       debugPrint('[OnAir] Ignoring onDisconnect during resume grace');
@@ -885,6 +1054,8 @@ class LiveStreamProvider extends ChangeNotifier {
     _reconnectTimer?.cancel();
     _retryTimer?.cancel();
     _configDebounce?.cancel();
+    _healthProbeTimer?.cancel();
+    _stopStreamHealthCheck();
     _stopWatchdog();
     _connectivitySub?.cancel();
     _pendingSettingsTask = null;

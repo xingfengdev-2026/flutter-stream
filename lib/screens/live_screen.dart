@@ -119,6 +119,10 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
       onDisconnection: () {
         if (_recreateGen == myGen) _provider.onDisconnect();
       },
+      onError: (error) {
+        debugPrint('[OnAir] Native onError: $error');
+        if (_recreateGen == myGen) _provider.onDisconnect();
+      },
     );
     await _controller!.initialize();
     if (_recreateGen != myGen || !mounted) return;
@@ -180,6 +184,10 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
           if (_recreateGen == myGen) _provider.onConnectionFailed(error);
         },
         onDisconnection: () {
+          if (_recreateGen == myGen) _provider.onDisconnect();
+        },
+        onError: (error) {
+          debugPrint('[OnAir] Native onError: $error');
           if (_recreateGen == myGen) _provider.onDisconnect();
         },
       );

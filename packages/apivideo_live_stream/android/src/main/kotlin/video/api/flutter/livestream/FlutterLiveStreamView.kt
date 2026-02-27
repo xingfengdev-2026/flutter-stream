@@ -22,7 +22,14 @@ import io.github.thibaultbee.streampack.utils.frontCameraList
 import io.github.thibaultbee.streampack.utils.isBackCamera
 import io.github.thibaultbee.streampack.utils.isExternalCamera
 import io.github.thibaultbee.streampack.utils.isFrontCamera
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class FlutterLiveStreamView(
     private val context: Context,
@@ -38,6 +45,9 @@ class FlutterLiveStreamView(
     private val flutterTexture = textureRegistry.createSurfaceTexture()
     val textureId: Long
         get() = flutterTexture.id()
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var connectJob: Job? = null
 
     private val streamer = CameraRtmpLiveStreamer(
         context = context,
@@ -174,16 +184,28 @@ class FlutterLiveStreamView(
     }
 
     fun startStream(url: String) {
-        runBlocking {
-            streamer.connect(url)
+        // Cancel any in-flight connect attempt before starting a new one
+        connectJob?.cancel()
+        connectJob = scope.launch {
             try {
+                // Connect + start on IO thread so main thread is never blocked.
+                // 10s timeout prevents hanging forever on unreachable servers.
+                val connected = withTimeoutOrNull(10_000L) {
+                    streamer.connect(url)
+                    true
+                }
+                if (connected == null) {
+                    withContext(Dispatchers.Main) {
+                        onConnectionFailed("Connection timed out")
+                    }
+                    return@launch
+                }
+
                 streamer.startStream()
                 _isStreaming = true
 
                 // If video was disabled before streaming started, apply black screen
                 if (!_isVideoEnabled) {
-                    // Wait for encoder/CodecSurface to be fully initialized
-                    // (setOutputSurface runs async on CodecSurface's executor)
                     var applied = false
                     for (attempt in 1..10) {
                         Thread.sleep(50)
@@ -202,9 +224,11 @@ class FlutterLiveStreamView(
                     }
                 }
             } catch (e: Exception) {
-                streamer.disconnect()
-                onLost("Failed to start stream: ${e.message}")
-                throw e
+                try { streamer.disconnect() } catch (_: Exception) {}
+                _isStreaming = false
+                withContext(Dispatchers.Main) {
+                    onLost("Failed to start stream: ${e.message}")
+                }
             }
         }
     }
@@ -212,13 +236,24 @@ class FlutterLiveStreamView(
     fun stopStream() {
         clearVideoMuteState()
         val isConnected = streamer.isConnected
-        runBlocking {
-            streamer.stopStream()
-            streamer.disconnect()
-            if (isConnected) {
-                onDisconnected()
+        // Use runBlocking here because callers (dispose, Flutter stopStreaming)
+        // expect synchronous completion. This is acceptable — stopStream is
+        // fast and the caller already anticipates a brief delay.
+        runBlocking(Dispatchers.IO) {
+            try {
+                streamer.stopStream()
+            } catch (e: Exception) {
+                Log.w(TAG, "stopStream error: ${e.message}")
+            }
+            try {
+                streamer.disconnect()
+            } catch (e: Exception) {
+                Log.w(TAG, "disconnect error: ${e.message}")
             }
             _isStreaming = false
+        }
+        if (isConnected) {
+            onDisconnected()
         }
     }
 

@@ -149,13 +149,12 @@ class MethodCallHandlerImpl(
 
                     url.isEmpty() -> result.error("empty_rtmp_url", "RTMP URL is empty", null)
 
-                    else ->
-                        try {
-                            flutterView!!.startStream(url.addTrailingSlashIfNeeded() + streamKey)
-                            result.success(null)
-                        } catch (e: Exception) {
-                            result.error("failed_to_start_stream", e.message, null)
-                        }
+                    else -> {
+                        // startStream is async (launches coroutine on IO thread).
+                        // Success/failure is reported via onConnectionSuccess/onConnectionFailed callbacks.
+                        flutterView!!.startStream(url.addTrailingSlashIfNeeded() + streamKey)
+                        result.success(null)
+                    }
                 }
             }
 
