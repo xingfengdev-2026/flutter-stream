@@ -47,8 +47,7 @@ class LiveStreamProvider extends ChangeNotifier {
   bool _recreationPending = false;
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
-  List<ConnectivityResult> _lastConnectivity = [];
-  Timer? _networkDebounce;
+  bool _hasNetwork = true;
 
   DateTime _resumeGraceUntil = DateTime(0);
 
@@ -101,39 +100,33 @@ class LiveStreamProvider extends ChangeNotifier {
 
   void _initConnectivityListener() {
     _connectivitySub = Connectivity().onConnectivityChanged.listen((result) {
-      final changed = _lastConnectivity.toString() != result.toString();
-      _lastConnectivity = result;
-      if (!changed) return;
+      final hasNetwork = result.any(
+        (r) =>
+            r == ConnectivityResult.wifi ||
+            r == ConnectivityResult.mobile ||
+            r == ConnectivityResult.ethernet,
+      );
+      final hadNetwork = _hasNetwork;
+      _hasNetwork = hasNetwork;
 
-      debugPrint('[OnAir] Network changed: $result');
+      debugPrint('[OnAir] Network changed: $result (has=$hasNetwork, had=$hadNetwork)');
 
-      final isActive =
-          _status == StreamStatus.streaming ||
-          _status == StreamStatus.connecting ||
-          _status == StreamStatus.reconnecting;
-
-      if (isActive && _activeServer != null && !userStopped) {
-        final hasNetwork = result.any(
-          (r) =>
-              r == ConnectivityResult.wifi ||
-              r == ConnectivityResult.mobile ||
-              r == ConnectivityResult.ethernet,
-        );
-
-        if (hasNetwork) {
-          _networkDebounce?.cancel();
-          _networkDebounce = Timer(const Duration(milliseconds: 800), () {
-            if (userStopped || _activeServer == null) return;
-            if (_status == StreamStatus.streaming) {
-              debugPrint(
-                '[OnAir] Network changed but stream still alive — skipping reconnect',
-              );
-              return;
-            }
-            debugPrint('[OnAir] Network stable, forcing reconnect...');
-            _forceReconnect();
-          });
+      // Network restored while we have an active session
+      if (!hadNetwork && hasNetwork && _activeServer != null && !userStopped) {
+        if (_status == StreamStatus.reconnecting) {
+          debugPrint('[OnAir] Network restored — accelerating reconnect');
+          _reconnectTimer?.cancel();
+          _retryTimer?.cancel();
+          _reconnectAttempt = 0;
+          _scheduleReconnect();
         }
+      }
+
+      // Network lost — cancel in-flight reconnect attempts to save resources
+      if (hadNetwork && !hasNetwork) {
+        debugPrint('[OnAir] Network lost — pausing reconnect attempts');
+        _reconnectTimer?.cancel();
+        _retryTimer?.cancel();
       }
     });
   }
@@ -146,16 +139,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _controllerBusy = false;
     _selfStopping = false;
     _pendingReconnect = false;
-
-    if (onControllerNeedsRecreate != null) {
-      _recreationPending = true;
-      _status = StreamStatus.reconnecting;
-      _errorMessage = 'Network changed, reconnecting...';
-      notifyListeners();
-      onControllerNeedsRecreate!();
-    } else {
-      _scheduleReconnect();
-    }
+    _scheduleReconnect();
   }
 
   Future<void> _loadServers() async {
@@ -221,8 +205,8 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   void armResumeGrace() {
-    _resumeGraceUntil = DateTime.now().add(const Duration(seconds: 3));
-    debugPrint('[OnAir] Resume grace armed for 3s');
+    _resumeGraceUntil = DateTime.now().add(const Duration(seconds: 5));
+    debugPrint('[OnAir] Resume grace armed for 5s');
   }
 
   bool get _inResumeGrace => DateTime.now().isBefore(_resumeGraceUntil);
@@ -587,16 +571,16 @@ class LiveStreamProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('[OnAir] attemptConnect unexpected error: $e');
     } finally {
-      if (_generation == myGen) {
-        _controllerBusy = false;
-        _selfStopping = false;
-      }
+      _controllerBusy = false;
+      _selfStopping = false;
     }
 
-    if (userStopped || _generation != myGen) return;
+    if (userStopped) return;
 
     if (_pendingReconnect ||
-        (_status != StreamStatus.streaming && _activeServer != null)) {
+        (_generation == myGen &&
+            _status != StreamStatus.streaming &&
+            _activeServer != null)) {
       _pendingReconnect = false;
       _scheduleReconnect();
     }
@@ -628,8 +612,17 @@ class LiveStreamProvider extends ChangeNotifier {
     _retryTimer?.cancel();
     _reconnectAttempt++;
     _status = StreamStatus.reconnecting;
-    _errorMessage = 'Reconnecting... (attempt $_reconnectAttempt)';
+    _errorMessage = _hasNetwork
+        ? 'Reconnecting... (attempt $_reconnectAttempt)'
+        : 'Waiting for network... (attempt $_reconnectAttempt)';
     notifyListeners();
+
+    // Skip scheduling when no network — the connectivity listener will
+    // call _scheduleReconnect() when network returns.
+    if (!_hasNetwork) {
+      debugPrint('[OnAir] No network — waiting for connectivity restore');
+      return;
+    }
 
     final delayMs = _reconnectAttempt <= 1
         ? 0
@@ -638,8 +631,14 @@ class LiveStreamProvider extends ChangeNotifier {
     _reconnectTimer = Timer(Duration(milliseconds: delayMs), () {
       if (userStopped || _activeServer == null || _generation != gen) return;
 
+      // Re-check network before attempting
+      if (!_hasNetwork) {
+        debugPrint('[OnAir] Network gone before reconnect attempt — waiting');
+        return;
+      }
+
       if (_reconnectAttempt > 0 &&
-          _reconnectAttempt % 2 == 0 &&
+          _reconnectAttempt % 6 == 0 &&
           onControllerNeedsRecreate != null) {
         debugPrint(
           '[OnAir] Requesting controller recreation (attempt $_reconnectAttempt)',
@@ -659,7 +658,7 @@ class LiveStreamProvider extends ChangeNotifier {
 
   void _startWatchdog() {
     _watchdogTimer?.cancel();
-    _watchdogTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    _watchdogTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (userStopped || _activeServer == null) {
         _watchdogTimer?.cancel();
         return;
@@ -699,7 +698,6 @@ class LiveStreamProvider extends ChangeNotifier {
     _generation++;
     _reconnectTimer?.cancel();
     _retryTimer?.cancel();
-    _networkDebounce?.cancel();
     _configDebounce?.cancel();
     _reconnectAttempt = 0;
     _pendingReconnect = false;
@@ -888,7 +886,6 @@ class LiveStreamProvider extends ChangeNotifier {
     _retryTimer?.cancel();
     _configDebounce?.cancel();
     _stopWatchdog();
-    _networkDebounce?.cancel();
     _connectivitySub?.cancel();
     _pendingSettingsTask = null;
     _controller?.dispose();

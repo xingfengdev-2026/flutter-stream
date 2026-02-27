@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:apivideo_live_stream/apivideo_live_stream.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -23,6 +24,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   int _recreateGen = 0;
 
   bool _wasLiveBeforePause = false;
+  Timer? _healthCheckTimer;
 
   @override
   void initState() {
@@ -36,6 +38,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     _recreateGen++;
+    _healthCheckTimer?.cancel();
     _provider.onControllerNeedsRecreate = null;
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
@@ -65,8 +68,12 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
         _wasLiveBeforePause = false;
 
         if (_provider.status == StreamStatus.streaming) {
-          debugPrint('[OnAir] Resumed — stream still alive, hands off');
+          debugPrint('[OnAir] Resumed — stream appears alive, arming grace + health check');
           _provider.armResumeGrace();
+          // Delayed health check: if stream dies silently during phone call,
+          // the disconnect callback might fire after resume. Give it time,
+          // then verify we're still actually streaming.
+          _schedulePostResumeHealthCheck();
         } else {
           debugPrint(
             '[OnAir] Resumed — stream died in background, recreating...',
@@ -117,6 +124,25 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
     if (_recreateGen != myGen || !mounted) return;
     _provider.initController(_controller!);
     setState(() => _isInitialized = true);
+  }
+
+  void _schedulePostResumeHealthCheck() {
+    _healthCheckTimer?.cancel();
+    _healthCheckTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted || _provider.userStopped) return;
+      // If status dropped from streaming during grace period, the normal
+      // reconnect flow should already be running. But if we're stuck in a
+      // weird state, kick the watchdog.
+      if (_provider.activeServer != null &&
+          _provider.status != StreamStatus.streaming &&
+          _provider.status != StreamStatus.idle) {
+        debugPrint('[OnAir] Post-resume health check: stream not healthy, recreating...');
+        _provider.notifyResumeFromBackground();
+        _recreateController();
+      } else {
+        debugPrint('[OnAir] Post-resume health check: stream healthy');
+      }
+    });
   }
 
   Future<void> _recreateController() async {
