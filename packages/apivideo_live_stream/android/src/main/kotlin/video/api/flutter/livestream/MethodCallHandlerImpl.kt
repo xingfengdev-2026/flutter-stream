@@ -66,15 +66,34 @@ class MethodCallHandlerImpl(
             }
 
             "dispose" -> {
-                flutterView?.dispose()
+                try {
+                    flutterView?.dispose()
+                } catch (e: Exception) {
+                    android.util.Log.w("MethodCallHandler", "dispose error: ${e.message}")
+                }
                 flutterView = null
+                result.success(null)
             }
 
+            else -> {
+                // Guard: all other methods require a live view
+                val view = flutterView
+                if (view == null) {
+                    result.error("no_live_stream", "Live stream not created", null)
+                    return
+                }
+                handleViewMethod(call, result, view)
+            }
+        }
+    }
+
+    private fun handleViewMethod(call: MethodCall, result: MethodChannel.Result, view: FlutterLiveStreamView) {
+        when (call.method) {
             "setVideoConfig" -> {
                 try {
                     @Suppress("UNCHECKED_CAST")
                     val videoConfig = (call.arguments as Map<String, Any>).toVideoConfig()
-                    flutterView!!.setVideoConfig(
+                    view.setVideoConfig(
                         videoConfig,
                         { result.success(null) },
                         {
@@ -93,7 +112,7 @@ class MethodCallHandlerImpl(
                 try {
                     @Suppress("UNCHECKED_CAST")
                     val audioConfig = (call.arguments as Map<String, Any>).toAudioConfig()
-                    flutterView!!.setAudioConfig(
+                    view.setAudioConfig(
                         audioConfig,
                         { result.success(null) },
                         {
@@ -110,7 +129,7 @@ class MethodCallHandlerImpl(
 
             "startPreview" -> {
                 try {
-                    flutterView!!.startPreview(
+                    view.startPreview(
                         { result.success(null) },
                         {
                             result.error(
@@ -125,7 +144,7 @@ class MethodCallHandlerImpl(
             }
 
             "stopPreview" -> {
-                flutterView?.stopPreview()
+                try { view.stopPreview() } catch (_: Exception) {}
                 result.success(null)
             }
 
@@ -150,23 +169,28 @@ class MethodCallHandlerImpl(
                     url.isEmpty() -> result.error("empty_rtmp_url", "RTMP URL is empty", null)
 
                     else -> {
-                        // startStream is async (launches coroutine on IO thread).
-                        // Success/failure is reported via onConnectionSuccess/onConnectionFailed callbacks.
-                        flutterView!!.startStream(url.addTrailingSlashIfNeeded() + streamKey)
+                        view.startStream(url.addTrailingSlashIfNeeded() + streamKey)
                         result.success(null)
                     }
                 }
             }
 
             "stopStreaming" -> {
-                flutterView?.stopStream()
+                try { view.stopStream() } catch (_: Exception) {}
                 result.success(null)
             }
 
-            "getIsStreaming" -> result.success(mapOf("isStreaming" to flutterView!!.isStreaming))
+            "getIsStreaming" -> {
+                try {
+                    result.success(mapOf("isStreaming" to view.isStreaming))
+                } catch (e: Exception) {
+                    result.error("failed_to_get_is_streaming", e.message, null)
+                }
+            }
+
             "getCameraPosition" -> {
                 try {
-                    result.success(mapOf("position" to flutterView!!.cameraPosition))
+                    result.success(mapOf("position" to view.cameraPosition))
                 } catch (e: Exception) {
                     result.error("failed_to_get_camera_position", e.message, null)
                 }
@@ -180,7 +204,7 @@ class MethodCallHandlerImpl(
                     return
                 }
                 try {
-                    flutterView!!.setCameraPosition(cameraPosition,
+                    view.setCameraPosition(cameraPosition,
                         { result.success(null) },
                         {
                             result.error(
@@ -196,7 +220,7 @@ class MethodCallHandlerImpl(
 
             "getIsMuted" -> {
                 try {
-                    result.success(mapOf("isMuted" to flutterView!!.isMuted))
+                    result.success(mapOf("isMuted" to view.isMuted))
                 } catch (e: Exception) {
                     result.error("failed_to_get_is_muted", e.message, null)
                 }
@@ -210,7 +234,7 @@ class MethodCallHandlerImpl(
                     return
                 }
                 try {
-                    flutterView!!.isMuted = isMuted
+                    view.isMuted = isMuted
                     result.success(null)
                 } catch (e: Exception) {
                     result.error("failed_to_set_is_muted", e.message, null)
@@ -219,7 +243,7 @@ class MethodCallHandlerImpl(
 
             "getVideoSize" -> {
                 try {
-                    val videoSize = flutterView!!.videoConfig.resolution
+                    val videoSize = view.videoConfig.resolution
                     result.success(
                         mapOf(
                             "width" to videoSize.width.toDouble(),
@@ -239,7 +263,7 @@ class MethodCallHandlerImpl(
                     return
                 }
                 try {
-                    flutterView!!.setVideoEnabled(enabled,
+                    view.setVideoEnabled(enabled,
                         { result.success(null) },
                         { result.error("failed_to_set_video_enabled", it.message, null) })
                 } catch (e: Exception) {
@@ -249,7 +273,7 @@ class MethodCallHandlerImpl(
 
             "getVideoEnabled" -> {
                 try {
-                    result.success(mapOf("enabled" to flutterView!!.isVideoEnabled))
+                    result.success(mapOf("enabled" to view.isVideoEnabled))
                 } catch (e: Exception) {
                     result.error("failed_to_get_video_enabled", e.message, null)
                 }
@@ -263,7 +287,7 @@ class MethodCallHandlerImpl(
                     return
                 }
                 try {
-                    flutterView!!.setZoom(zoomRatio)
+                    view.setZoom(zoomRatio)
                     result.success(null)
                 } catch (e: Exception) {
                     result.error("failed_to_set_zoom", e.message, null)
@@ -272,7 +296,7 @@ class MethodCallHandlerImpl(
 
             "getMaxZoom" -> {
                 try {
-                    result.success(mapOf("maxZoom" to flutterView!!.getMaxZoom()))
+                    result.success(mapOf("maxZoom" to view.getMaxZoom()))
                 } catch (e: Exception) {
                     result.error("failed_to_get_max_zoom", e.message, null)
                 }
@@ -280,7 +304,7 @@ class MethodCallHandlerImpl(
 
             "getMinZoom" -> {
                 try {
-                    result.success(mapOf("minZoom" to flutterView!!.getMinZoom()))
+                    result.success(mapOf("minZoom" to view.getMinZoom()))
                 } catch (e: Exception) {
                     result.error("failed_to_get_min_zoom", e.message, null)
                 }
@@ -294,7 +318,7 @@ class MethodCallHandlerImpl(
                     return
                 }
                 try {
-                    flutterView!!.setBitrate(bitrate)
+                    view.setBitrate(bitrate)
                     result.success(null)
                 } catch (e: Exception) {
                     result.error("failed_to_set_bitrate", e.message, null)

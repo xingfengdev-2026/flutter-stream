@@ -104,7 +104,7 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
   Future<void> _initCamera() async {
     _recreateGen++;
     final myGen = _recreateGen;
-    _controller = ApiVideoLiveStreamController(
+    final ctrl = ApiVideoLiveStreamController(
       initialAudioConfig: AudioConfig(),
       initialVideoConfig: _provider.buildVideoConfig(),
       initialCameraPosition: _provider.isFrontCamera
@@ -124,10 +124,20 @@ class _LiveScreenState extends State<LiveScreen> with WidgetsBindingObserver {
         if (_recreateGen == myGen) _provider.onDisconnect();
       },
     );
-    await _controller!.initialize();
-    if (_recreateGen != myGen || !mounted) return;
-    _provider.initController(_controller!);
-    setState(() => _isInitialized = true);
+    try {
+      await ctrl.initialize();
+    } catch (e) {
+      debugPrint('[OnAir] Controller initialize failed: $e');
+      try { ctrl.dispose(); } catch (_) {}
+      return;
+    }
+    if (_recreateGen != myGen || !mounted) {
+      try { ctrl.dispose(); } catch (_) {}
+      return;
+    }
+    _controller = ctrl;
+    _provider.initController(ctrl);
+    if (mounted) setState(() => _isInitialized = true);
   }
 
   void _schedulePostResumeHealthCheck() {

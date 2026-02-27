@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -178,9 +179,27 @@ class FlutterLiveStreamView(
     }
 
     fun dispose() {
-        stopStream()
-        streamer.stopPreview()
-        flutterTexture.release()
+        // Cancel all coroutines first so nothing is in-flight
+        try {
+            scope.cancel()
+        } catch (_: Exception) {}
+        connectJob = null
+
+        try {
+            stopStream()
+        } catch (e: Exception) {
+            Log.w(TAG, "dispose stopStream error: ${e.message}")
+        }
+        try {
+            streamer.stopPreview()
+        } catch (e: Exception) {
+            Log.w(TAG, "dispose stopPreview error: ${e.message}")
+        }
+        try {
+            flutterTexture.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "dispose flutterTexture.release error: ${e.message}")
+        }
     }
 
     fun startStream(url: String) {
@@ -195,9 +214,12 @@ class FlutterLiveStreamView(
                     true
                 }
                 if (connected == null) {
-                    withContext(Dispatchers.Main) {
-                        onConnectionFailed("Connection timed out")
-                    }
+                    try { streamer.disconnect() } catch (_: Exception) {}
+                    try {
+                        withContext(Dispatchers.Main) {
+                            onConnectionFailed("Connection timed out")
+                        }
+                    } catch (_: Exception) {}
                     return@launch
                 }
 
@@ -223,36 +245,62 @@ class FlutterLiveStreamView(
                         Log.w(TAG, "Could not apply black screen at stream start")
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Job was cancelled (e.g. stopStream or new startStream called).
+                // Don't report as failure — the caller already knows.
+                Log.d(TAG, "startStream cancelled: ${e.message}")
+                try { streamer.disconnect() } catch (_: Exception) {}
+                _isStreaming = false
+                throw e  // re-throw to let coroutine machinery handle cancellation
             } catch (e: Exception) {
                 try { streamer.disconnect() } catch (_: Exception) {}
                 _isStreaming = false
-                withContext(Dispatchers.Main) {
-                    onLost("Failed to start stream: ${e.message}")
-                }
+                try {
+                    withContext(Dispatchers.Main) {
+                        onLost("Failed to start stream: ${e.message}")
+                    }
+                } catch (_: Exception) {}
             }
         }
     }
 
     fun stopStream() {
-        clearVideoMuteState()
-        val isConnected = streamer.isConnected
-        // Use runBlocking here because callers (dispose, Flutter stopStreaming)
-        // expect synchronous completion. This is acceptable — stopStream is
-        // fast and the caller already anticipates a brief delay.
-        runBlocking(Dispatchers.IO) {
-            try {
-                streamer.stopStream()
-            } catch (e: Exception) {
-                Log.w(TAG, "stopStream error: ${e.message}")
-            }
-            try {
-                streamer.disconnect()
-            } catch (e: Exception) {
-                Log.w(TAG, "disconnect error: ${e.message}")
-            }
-            _isStreaming = false
+        // Cancel any in-flight connect attempt first
+        connectJob?.cancel()
+        connectJob = null
+
+        try {
+            clearVideoMuteState()
+        } catch (e: Exception) {
+            Log.w(TAG, "clearVideoMuteState error in stopStream: ${e.message}")
         }
-        if (isConnected) {
+
+        val wasConnected = try { streamer.isConnected } catch (_: Exception) { false }
+
+        // Use runBlocking with a hard timeout so we never block forever.
+        // If the RTMP socket is stuck on a dead connection, disconnect() can
+        // hang indefinitely — the 3s timeout prevents ANR / method channel deadlock.
+        try {
+            runBlocking(Dispatchers.IO) {
+                withTimeoutOrNull(3_000L) {
+                    try {
+                        streamer.stopStream()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "stopStream error: ${e.message}")
+                    }
+                    try {
+                        streamer.disconnect()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "disconnect error: ${e.message}")
+                    }
+                } ?: Log.w(TAG, "stopStream timed out after 3s — forcing ahead")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "stopStream runBlocking error: ${e.message}")
+        }
+        _isStreaming = false
+
+        if (wasConnected) {
             onDisconnected()
         }
     }
@@ -622,21 +670,41 @@ class FlutterLiveStreamView(
     }
 
     override fun onSuccess() {
-        onConnectionSucceeded()
+        try {
+            onConnectionSucceeded()
+        } catch (e: Exception) {
+            Log.w(TAG, "onConnectionSucceeded callback error: ${e.message}")
+        }
     }
 
     override fun onLost(message: String) {
-        onDisconnected()
+        try {
+            onDisconnected()
+        } catch (e: Exception) {
+            Log.w(TAG, "onDisconnected callback error: ${e.message}")
+        }
     }
 
     override fun onFailed(message: String) {
-        onConnectionFailed(message)
+        try {
+            onConnectionFailed(message)
+        } catch (e: Exception) {
+            Log.w(TAG, "onConnectionFailed callback error: ${e.message}")
+        }
     }
 
     override fun onError(error: StreamPackError) {
         _isStreaming = false
-        clearVideoMuteState()
-        onGenericError(error)
+        try {
+            clearVideoMuteState()
+        } catch (e: Exception) {
+            Log.w(TAG, "clearVideoMuteState failed in onError: ${e.message}")
+        }
+        try {
+            onGenericError(error)
+        } catch (e: Exception) {
+            Log.w(TAG, "onGenericError callback failed: ${e.message}")
+        }
     }
 
     companion object {

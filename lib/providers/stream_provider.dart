@@ -52,6 +52,8 @@ class LiveStreamProvider extends ChangeNotifier {
   Timer? _streamHealthTimer;
   String _lastNetworkSignature = '';
 
+  bool _disposed = false;
+
   DateTime _resumeGraceUntil = DateTime(0);
 
   bool _isMuted = false;
@@ -189,7 +191,7 @@ class LiveStreamProvider extends ChangeNotifier {
 
   Future<void> _loadServers() async {
     _servers = await _serverService.getServers();
-    notifyListeners();
+    _safeNotify();
   }
 
   Future<void> addServer(ServerConfig server) async {
@@ -213,23 +215,24 @@ class LiveStreamProvider extends ChangeNotifier {
   void initController(ApiVideoLiveStreamController controller) {
     _controller = controller;
     _recreationPending = false;
-    notifyListeners();
+    _safeNotify();
     _pendingSettingsTask = _applyPendingSettings();
   }
 
   Future<void> _applyPendingSettings() async {
-    if (_controller == null) return;
+    final ctrl = _controller;
+    if (ctrl == null) return;
     try {
-      await _controller!.setCameraPosition(
+      await ctrl.setCameraPosition(
         _isFrontCamera ? CameraPosition.front : CameraPosition.back,
       );
     } catch (_) {}
     try {
-      await _controller!.setIsMuted(_isMuted);
+      await ctrl.setIsMuted(_isMuted);
     } catch (_) {}
     if (!_isVideoEnabled) {
       try {
-        await _controller!.setVideoEnabled(false);
+        await ctrl.setVideoEnabled(false);
       } catch (_) {}
     }
     loadZoomRange();
@@ -246,7 +249,7 @@ class LiveStreamProvider extends ChangeNotifier {
   void clearController() {
     _controller = null;
     _pendingSettingsTask = null;
-    notifyListeners();
+    _safeNotify();
   }
 
   void armResumeGrace() {
@@ -255,6 +258,17 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   bool get _inResumeGrace => DateTime.now().isBefore(_resumeGraceUntil);
+
+  /// Safe wrapper around notifyListeners that won't crash if already disposed.
+  void _safeNotify() {
+    if (!_disposed) {
+      try {
+        notifyListeners();
+      } catch (e) {
+        debugPrint('[OnAir] notifyListeners error (disposed=$_disposed): $e');
+      }
+    }
+  }
 
   void notifyResumeFromBackground() {
     _generation++;
@@ -267,7 +281,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _reconnectAttempt = 0;
     _status = StreamStatus.reconnecting;
     _errorMessage = 'Resuming stream...';
-    notifyListeners();
+    _safeNotify();
   }
 
   Future<void> startStreamingWithFreshController(ServerConfig server) async {
@@ -280,7 +294,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _pendingReconnect = false;
     _controllerBusy = false;
     _selfStopping = false;
-    notifyListeners();
+    _safeNotify();
 
     ForegroundService.start();
     WakelockPlus.enable();
@@ -322,7 +336,8 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   Future<void> _applyVideoConfig() async {
-    if (_controller == null) return;
+    final ctrl = _controller;
+    if (ctrl == null) return;
 
     final isStreaming = _status == StreamStatus.streaming;
 
@@ -334,19 +349,16 @@ class LiveStreamProvider extends ChangeNotifier {
         server.streamKey,
       );
 
-      // Arm resume grace so the self-triggered disconnect is fully ignored,
-      // even if the native callback arrives asynchronously after _selfStopping
-      // is cleared.
       _resumeGraceUntil = DateTime.now().add(const Duration(seconds: 3));
 
       _selfStopping = true;
       try {
-        await _controller!.stopStreaming().timeout(const Duration(seconds: 2));
+        await ctrl.stopStreaming().timeout(const Duration(seconds: 2));
       } catch (_) {}
       _selfStopping = false;
 
       try {
-        await _controller!.setVideoConfig(buildVideoConfig());
+        await ctrl.setVideoConfig(buildVideoConfig());
       } catch (e) {
         debugPrint('[OnAir] setVideoConfig error: $e');
       }
@@ -360,13 +372,11 @@ class LiveStreamProvider extends ChangeNotifier {
       }
 
       try {
-        await _controller!
+        await ctrl
             .startStreaming(streamKey: effectiveKey, url: effectiveUrl);
         debugPrint(
           '[OnAir] Stream restart command sent (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})',
         );
-        // Connection success/failure arrives via callbacks.
-        // Clear grace after a delay so normal callbacks resume.
         Future.delayed(const Duration(seconds: 3), () {
           _resumeGraceUntil = DateTime(0);
         });
@@ -377,7 +387,7 @@ class LiveStreamProvider extends ChangeNotifier {
       }
     } else {
       try {
-        await _controller!.setVideoConfig(buildVideoConfig());
+        await ctrl.setVideoConfig(buildVideoConfig());
         debugPrint(
           '[OnAir] VideoConfig applied (res=$_resolution, fps=${_isNativeFps ? "native" : _customFps})',
         );
@@ -406,7 +416,7 @@ class LiveStreamProvider extends ChangeNotifier {
     if (_orientationMode == mode) return;
     _orientationMode = mode;
     _applyOrientation();
-    notifyListeners();
+    _safeNotify();
   }
 
   void _applyOrientation() {
@@ -425,20 +435,20 @@ class LiveStreamProvider extends ChangeNotifier {
 
   void toggleLock() {
     _isLocked = !_isLocked;
-    notifyListeners();
+    _safeNotify();
   }
 
   void setResolution(String res) {
     if (_isLocked) return;
     _resolution = res;
-    notifyListeners();
+    _safeNotify();
     _debouncedApplyVideoConfig();
   }
 
   void setFpsNative() {
     if (_isLocked) return;
     _isNativeFps = true;
-    notifyListeners();
+    _safeNotify();
     _debouncedApplyVideoConfig();
   }
 
@@ -446,7 +456,7 @@ class LiveStreamProvider extends ChangeNotifier {
     if (_isLocked) return;
     _isNativeFps = false;
     _customFps = f.clamp(1, 30).toInt();
-    notifyListeners();
+    _safeNotify();
     _debouncedApplyVideoConfig();
   }
 
@@ -550,7 +560,7 @@ class LiveStreamProvider extends ChangeNotifier {
     userStopped = false;
     _reconnectAttempt = 0;
     _pendingReconnect = false;
-    notifyListeners();
+    _safeNotify();
 
     ForegroundService.start();
     WakelockPlus.enable();
@@ -565,9 +575,10 @@ class LiveStreamProvider extends ChangeNotifier {
     final myGen = _generation;
     final isReconnect = _reconnectAttempt > 0;
 
-    if (_controller == null || _controllerBusy) {
+    final ctrl = _controller;
+    if (ctrl == null || _controllerBusy) {
       debugPrint(
-        '[OnAir] attemptConnect deferred (ctrl=${_controller != null}, busy=$_controllerBusy)',
+        '[OnAir] attemptConnect deferred (ctrl=${ctrl != null}, busy=$_controllerBusy)',
       );
       _scheduleRetry(server);
       return;
@@ -576,9 +587,6 @@ class LiveStreamProvider extends ChangeNotifier {
     await _waitPendingSettings();
     if (userStopped || _generation != myGen || _controller == null) return;
 
-    // Skip TCP probe for first 4 reconnect attempts — go straight to RTMP.
-    // This saves ~2s per failed attempt in tunnels/dead-spots and lets us
-    // reconnect the instant network returns.
     final skipProbe = isReconnect && _reconnectAttempt <= 4;
 
     if (!skipProbe) {
@@ -603,7 +611,6 @@ class LiveStreamProvider extends ChangeNotifier {
     _controllerBusy = true;
     _pendingReconnect = false;
 
-    // Use shorter timeouts during reconnection for faster cycling
     final stopTimeout = isReconnect
         ? const Duration(seconds: 1)
         : const Duration(seconds: 2);
@@ -614,7 +621,7 @@ class LiveStreamProvider extends ChangeNotifier {
     try {
       _selfStopping = true;
       try {
-        await _controller!.stopStreaming().timeout(stopTimeout);
+        await ctrl.stopStreaming().timeout(stopTimeout);
       } catch (_) {}
 
       if (_generation != myGen) return;
@@ -623,21 +630,16 @@ class LiveStreamProvider extends ChangeNotifier {
 
       if (userStopped) return;
 
-      // Skip startPreview during reconnection — camera preview is already
-      // running. This saves 0-3 seconds per reconnect cycle.
       if (!isReconnect) {
         try {
-          await _controller!.startPreview().timeout(const Duration(seconds: 3));
+          await ctrl.startPreview().timeout(const Duration(seconds: 3));
         } catch (_) {}
 
         if (userStopped || _generation != myGen) return;
       }
 
       try {
-        // startStreaming returns immediately — the native layer connects
-        // asynchronously on IO thread. Success/failure will arrive via
-        // onConnectionSuccess / onConnectionFailed callbacks.
-        await _controller!
+        await ctrl
             .startStreaming(streamKey: effectiveKey, url: effectiveUrl);
         debugPrint('[OnAir] startStreaming command sent (gen=$myGen)');
       } catch (e) {
@@ -694,7 +696,7 @@ class LiveStreamProvider extends ChangeNotifier {
       _startTimer();
     }
     _startStreamHealthCheck();
-    notifyListeners();
+    _safeNotify();
   }
 
   /// Periodic TCP probe while streaming. Catches stale connections from
@@ -745,7 +747,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _errorMessage = _hasNetwork
         ? 'Reconnecting... (attempt $_reconnectAttempt)'
         : 'Waiting for network... (attempt $_reconnectAttempt)';
-    notifyListeners();
+    _safeNotify();
 
     // Skip scheduling when no network — the connectivity listener will
     // call _scheduleReconnect() when network returns.
@@ -873,9 +875,10 @@ class LiveStreamProvider extends ChangeNotifier {
 
     _recreationPending = false;
     _pendingSettingsTask = null;
-    if (_controller != null) {
+    final ctrl = _controller;
+    if (ctrl != null) {
       try {
-        await _controller!.stopStreaming().timeout(const Duration(seconds: 2));
+        await ctrl.stopStreaming().timeout(const Duration(seconds: 2));
       } catch (_) {}
     }
 
@@ -884,7 +887,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _stopTimer();
     WakelockPlus.disable();
     ForegroundService.stop();
-    notifyListeners();
+    _safeNotify();
   }
 
   Future<void> toggleCamera() async {
@@ -893,14 +896,15 @@ class LiveStreamProvider extends ChangeNotifier {
 
   Future<void> setCameraPosition(bool front) async {
     if (_isLocked) return;
-    if (_controller == null) return;
+    final ctrl = _controller;
+    if (ctrl == null) return;
     try {
-      await _controller!.setCameraPosition(
+      await ctrl.setCameraPosition(
         front ? CameraPosition.front : CameraPosition.back,
       );
       _isFrontCamera = front;
       await loadZoomRange();
-      notifyListeners();
+      _safeNotify();
     } catch (e) {
       debugPrint('[OnAir] Failed to set camera position: $e');
     }
@@ -908,11 +912,12 @@ class LiveStreamProvider extends ChangeNotifier {
 
   Future<void> toggleMute() async {
     if (_isLocked) return;
-    if (_controller == null) return;
+    final ctrl = _controller;
+    if (ctrl == null) return;
     _isMuted = !_isMuted;
-    notifyListeners();
+    _safeNotify();
     try {
-      await _controller!.setIsMuted(_isMuted);
+      await ctrl.setIsMuted(_isMuted);
       debugPrint('[OnAir] Mute: $_isMuted');
     } catch (_) {}
   }
@@ -921,11 +926,12 @@ class LiveStreamProvider extends ChangeNotifier {
     if (_isLocked) return;
     final next = !_isVideoEnabled;
     _isVideoEnabled = next;
-    notifyListeners();
+    _safeNotify();
     debugPrint('[OnAir] Video enabled: $_isVideoEnabled');
-    if (_controller != null) {
+    final ctrl = _controller;
+    if (ctrl != null) {
       try {
-        await _controller!.setVideoEnabled(next);
+        await ctrl.setVideoEnabled(next);
       } catch (e) {
         debugPrint('[OnAir] setVideoEnabled error: $e');
       }
@@ -933,15 +939,16 @@ class LiveStreamProvider extends ChangeNotifier {
   }
 
   Future<void> loadZoomRange() async {
-    if (_controller == null) return;
+    final ctrl = _controller;
+    if (ctrl == null) return;
     try {
-      _maxZoom = await _controller!.maxZoom;
+      _maxZoom = await ctrl.maxZoom;
       if (_maxZoom < 1.0) _maxZoom = 1.0;
     } catch (e) {
       debugPrint('[OnAir] Failed to load max zoom: $e');
     }
     try {
-      _minZoom = await _controller!.minZoom;
+      _minZoom = await ctrl.minZoom;
       if (_minZoom > 1.0) _minZoom = 1.0;
     } catch (e) {
       _minZoom = 1.0;
@@ -949,17 +956,18 @@ class LiveStreamProvider extends ChangeNotifier {
     }
     _currentZoom = _currentZoom.clamp(_minZoom, _maxZoom).toDouble();
     debugPrint('[OnAir] Zoom range: $_minZoom - $_maxZoom');
-    notifyListeners();
+    _safeNotify();
   }
 
   Future<void> setZoom(double zoom) async {
     if (_isLocked) return;
-    if (_controller == null) return;
+    final ctrl = _controller;
+    if (ctrl == null) return;
     final clamped = zoom.clamp(_minZoom, _maxZoom);
     _currentZoom = clamped;
-    notifyListeners();
+    _safeNotify();
     try {
-      await _controller!.setZoom(clamped);
+      await ctrl.setZoom(clamped);
     } catch (e) {
       debugPrint('[OnAir] Failed to set zoom: $e');
     }
@@ -990,7 +998,7 @@ class LiveStreamProvider extends ChangeNotifier {
       _errorMessage = reason.isEmpty
           ? 'Connection failed, retrying...'
           : '$reason - retrying...';
-      notifyListeners();
+      _safeNotify();
       return;
     }
 
@@ -1018,7 +1026,7 @@ class LiveStreamProvider extends ChangeNotifier {
       _pendingReconnect = true;
       _status = StreamStatus.reconnecting;
       _errorMessage = 'Connection lost, retrying...';
-      notifyListeners();
+      _safeNotify();
       return;
     }
 
@@ -1030,7 +1038,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _duration = Duration.zero;
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       _duration += const Duration(seconds: 1);
-      notifyListeners();
+      _safeNotify();
     });
   }
 
@@ -1048,6 +1056,7 @@ class LiveStreamProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     userStopped = true;
     _generation++;
     _timer?.cancel();
@@ -1059,7 +1068,7 @@ class LiveStreamProvider extends ChangeNotifier {
     _stopWatchdog();
     _connectivitySub?.cancel();
     _pendingSettingsTask = null;
-    _controller?.dispose();
+    _controller = null;
     WakelockPlus.disable();
     ForegroundService.stop();
     super.dispose();
