@@ -1,7 +1,7 @@
 name: stream_app
-description: "Live streaming app with RTMP support"
+description: "Minimal Flutter app for CI build verification"
 publish_to: 'none'
-version: 2.0.3
+version: 2.0.3+2002
 
 environment:
   sdk: ^3.11.0
@@ -10,13 +10,6 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  apivideo_live_stream:
-    path: packages/apivideo_live_stream
-  provider: ^6.1.2
-  shared_preferences: ^2.3.4
-  permission_handler: ^12.0.1
-  wakelock_plus: ^1.2.8
-  connectivity_plus: ^7.0.0
 
 dev_dependencies:
   flutter_test:
